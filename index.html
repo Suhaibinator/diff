@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diff Checker</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #161922;
+    --surface-2: #1c1f2e;
+    --border: #2a2d3e;
+    --text: #e2e4ed;
+    --text-muted: #8b8fa3;
+    --accent: #7c6aef;
+    --accent-hover: #6b59de;
+    --added-bg: #12261e;
+    --added-border: #1a4d2e;
+    --added-text: #6fdd8b;
+    --added-gutter: #1a3a28;
+    --removed-bg: #2a1215;
+    --removed-border: #4d1a1f;
+    --removed-text: #f47067;
+    --removed-gutter: #3a1a1e;
+    --highlight-add: rgba(63, 185, 80, 0.25);
+    --highlight-remove: rgba(248, 81, 73, 0.25);
+    --unchanged-gutter: #1c1f2e;
+  }
+
+  html, body {
+    height: 100%;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #fff;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .btn {
+    padding: 8px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn:hover { background: var(--border); }
+
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+  .view-toggle {
+    display: flex;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .view-toggle button {
+    padding: 7px 14px;
+    border: none;
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .view-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .view-toggle button:not(.active):hover { background: var(--border); }
+
+  /* ── Input Area ── */
+  .input-area {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .input-pane {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    min-height: 0;
+  }
+
+  .input-pane:last-child { border-right: none; }
+
+  .pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+
+  .pane-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+  }
+
+  .pane-header .char-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  textarea {
+    flex: 1;
+    resize: none;
+    border: none;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    padding: 16px;
+    outline: none;
+    tab-size: 4;
+    min-height: 0;
+  }
+
+  textarea::placeholder { color: var(--text-muted); opacity: 0.5; }
+
+  /* ── Diff Output ── */
+  .diff-area {
+    flex: 1;
+    min-height: 0;
+    display: none;
+    flex-direction: column;
+  }
+
+  .diff-area.visible { display: flex; }
+  .input-area.hidden { display: none; }
+
+  .diff-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+
+  .diff-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .stat-added { color: var(--added-text); }
+  .stat-removed { color: var(--removed-text); }
+  .stat-unchanged { color: var(--text-muted); }
+
+  .diff-scroll {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+  }
+
+  /* ── Unified Diff ── */
+  .diff-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+
+  .diff-table td {
+    padding: 0 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    vertical-align: top;
+  }
+
+  .diff-table .line-num {
+    width: 50px;
+    min-width: 50px;
+    text-align: right;
+    color: var(--text-muted);
+    opacity: 0.5;
+    user-select: none;
+    padding: 0 8px;
+    font-size: 12px;
+    border-right: 1px solid var(--border);
+  }
+
+  .diff-table .line-type {
+    width: 20px;
+    min-width: 20px;
+    text-align: center;
+    user-select: none;
+    font-weight: 600;
+  }
+
+  .diff-row-added {
+    background: var(--added-bg);
+  }
+
+  .diff-row-added .line-num { background: var(--added-gutter); }
+  .diff-row-added .line-type { color: var(--added-text); background: var(--added-gutter); }
+  .diff-row-added .line-content { color: var(--added-text); }
+
+  .diff-row-removed {
+    background: var(--removed-bg);
+  }
+
+  .diff-row-removed .line-num { background: var(--removed-gutter); }
+  .diff-row-removed .line-type { color: var(--removed-text); background: var(--removed-gutter); }
+  .diff-row-removed .line-content { color: var(--removed-text); }
+
+  .diff-row-unchanged .line-num { background: var(--unchanged-gutter); }
+  .diff-row-unchanged .line-type { background: var(--unchanged-gutter); }
+
+  .diff-row-separator td {
+    background: var(--surface-2);
+    color: var(--text-muted);
+    text-align: center;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-style: italic;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .char-highlight-add { background: var(--highlight-add); border-radius: 2px; }
+  .char-highlight-remove { background: var(--highlight-remove); border-radius: 2px; }
+
+  /* ── Side-by-side ── */
+  .diff-side-wrapper {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 100%;
+  }
+
+  .diff-side {
+    border-right: 1px solid var(--border);
+    min-width: 0;
+  }
+
+  .diff-side:last-child { border-right: none; }
+
+  .diff-side-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 8px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+  }
+
+  .diff-side table {
+    width: 100%;
+  }
+
+  .diff-side .line-num { width: 45px; min-width: 45px; }
+
+  /* ── Empty state ── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+    text-align: center;
+    gap: 12px;
+    flex: 1;
+  }
+
+  .empty-state svg { opacity: 0.3; }
+
+  .empty-state p {
+    font-size: 14px;
+    max-width: 320px;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    header { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
+    .input-area { grid-template-columns: 1fr; }
+    .input-pane { border-right: none !important; border-bottom: 1px solid var(--border); }
+    .diff-side-wrapper { grid-template-columns: 1fr; }
+    .diff-side { border-right: none !important; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 4h12M2 8h8M2 12h10" stroke="white" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <span>Diff Checker</span>
+    </div>
+    <div class="controls">
+      <div class="view-toggle" id="viewToggle">
+        <button class="active" data-view="unified">Unified</button>
+        <button data-view="split">Split</button>
+      </div>
+      <button class="btn" id="swapBtn" title="Swap left and right">&#8644; Swap</button>
+      <button class="btn" id="clearBtn">Clear</button>
+      <button class="btn btn-primary" id="diffBtn">Compare</button>
+    </div>
+  </header>
+
+  <div class="input-area" id="inputArea">
+    <div class="input-pane">
+      <div class="pane-header">
+        <span class="pane-label">Original</span>
+        <span class="char-count" id="leftCount">0 chars</span>
+      </div>
+      <textarea id="leftInput" placeholder="Paste original text here..." spellcheck="false"></textarea>
+    </div>
+    <div class="input-pane">
+      <div class="pane-header">
+        <span class="pane-label">Modified</span>
+        <span class="char-count" id="rightCount">0 chars</span>
+      </div>
+      <textarea id="rightInput" placeholder="Paste modified text here..." spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div class="diff-area" id="diffArea">
+    <div class="diff-toolbar">
+      <div class="diff-stats" id="diffStats"></div>
+      <button class="btn" id="editBtn">&#9998; Edit</button>
+    </div>
+    <div class="diff-scroll" id="diffScroll"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const leftInput = document.getElementById('leftInput');
+  const rightInput = document.getElementById('rightInput');
+  const leftCount = document.getElementById('leftCount');
+  const rightCount = document.getElementById('rightCount');
+  const diffBtn = document.getElementById('diffBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const swapBtn = document.getElementById('swapBtn');
+  const editBtn = document.getElementById('editBtn');
+  const inputArea = document.getElementById('inputArea');
+  const diffArea = document.getElementById('diffArea');
+  const diffScroll = document.getElementById('diffScroll');
+  const diffStats = document.getElementById('diffStats');
+  const viewToggle = document.getElementById('viewToggle');
+
+  let currentView = 'unified';
+  let lastDiff = null;
+
+  // Character counts
+  leftInput.addEventListener('input', () => {
+    leftCount.textContent = leftInput.value.length + ' chars';
+  });
+  rightInput.addEventListener('input', () => {
+    rightCount.textContent = rightInput.value.length + ' chars';
+  });
+
+  // View toggle
+  viewToggle.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-view]');
+    if (!btn) return;
+    viewToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentView = btn.dataset.view;
+    if (lastDiff) renderDiff(lastDiff);
+  });
+
+  // Compare
+  diffBtn.addEventListener('click', runDiff);
+
+  // Ctrl+Enter shortcut
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      if (!inputArea.classList.contains('hidden')) runDiff();
+    }
+  });
+
+  // Back to edit
+  editBtn.addEventListener('click', () => {
+    diffArea.classList.remove('visible');
+    inputArea.classList.remove('hidden');
+  });
+
+  // Clear
+  clearBtn.addEventListener('click', () => {
+    leftInput.value = '';
+    rightInput.value = '';
+    leftCount.textContent = '0 chars';
+    rightCount.textContent = '0 chars';
+    lastDiff = null;
+    diffArea.classList.remove('visible');
+    inputArea.classList.remove('hidden');
+    leftInput.focus();
+  });
+
+  // Swap
+  swapBtn.addEventListener('click', () => {
+    const tmp = leftInput.value;
+    leftInput.value = rightInput.value;
+    rightInput.value = tmp;
+    leftCount.textContent = leftInput.value.length + ' chars';
+    rightCount.textContent = rightInput.value.length + ' chars';
+  });
+
+  function runDiff() {
+    const a = leftInput.value;
+    const b = rightInput.value;
+    lastDiff = computeDiff(a, b);
+    inputArea.classList.add('hidden');
+    diffArea.classList.add('visible');
+    renderDiff(lastDiff);
+  }
+
+  // ── Myers diff algorithm ──
+  function computeDiff(oldText, newText) {
+    const oldLines = oldText.split('\n');
+    const newLines = newText.split('\n');
+    const ops = myersDiff(oldLines, newLines);
+    return { oldLines, newLines, ops };
+  }
+
+  function myersDiff(a, b) {
+    const N = a.length;
+    const M = b.length;
+    const MAX = N + M;
+    const v = new Array(2 * MAX + 1);
+    v[MAX + 1] = 0;
+    const trace = [];
+
+    for (let d = 0; d <= MAX; d++) {
+      trace.push(v.slice());
+      for (let k = -d; k <= d; k += 2) {
+        let x;
+        if (k === -d || (k !== d && v[MAX + k - 1] < v[MAX + k + 1])) {
+          x = v[MAX + k + 1];
+        } else {
+          x = v[MAX + k - 1] + 1;
+        }
+        let y = x - k;
+        while (x < N && y < M && a[x] === b[y]) {
+          x++;
+          y++;
+        }
+        v[MAX + k] = x;
+        if (x >= N && y >= M) {
+          return backtrack(trace, a, b, MAX);
+        }
+      }
+    }
+    return [];
+  }
+
+  function backtrack(trace, a, b, MAX) {
+    let x = a.length;
+    let y = b.length;
+    const ops = [];
+
+    for (let d = trace.length - 1; d >= 0; d--) {
+      const v = trace[d];
+      const k = x - y;
+      let prevK;
+      if (k === -d || (k !== d && v[MAX + k - 1] < v[MAX + k + 1])) {
+        prevK = k + 1;
+      } else {
+        prevK = k - 1;
+      }
+      const prevX = v[MAX + prevK];
+      const prevY = prevX - prevK;
+
+      while (x > prevX && y > prevY) {
+        ops.push({ type: 'equal', oldIdx: x - 1, newIdx: y - 1 });
+        x--;
+        y--;
+      }
+
+      if (d > 0) {
+        if (x === prevX) {
+          ops.push({ type: 'insert', newIdx: y - 1 });
+          y--;
+        } else {
+          ops.push({ type: 'delete', oldIdx: x - 1 });
+          x--;
+        }
+      }
+    }
+
+    ops.reverse();
+    return ops;
+  }
+
+  // ── Inline word diff ──
+  function wordDiff(oldStr, newStr) {
+    const oldTokens = tokenize(oldStr);
+    const newTokens = tokenize(newStr);
+    const ops = myersDiff(oldTokens, newTokens);
+
+    let oldHtml = '';
+    let newHtml = '';
+
+    for (const op of ops) {
+      if (op.type === 'equal') {
+        oldHtml += esc(oldTokens[op.oldIdx]);
+        newHtml += esc(newTokens[op.newIdx]);
+      } else if (op.type === 'delete') {
+        oldHtml += '<span class="char-highlight-remove">' + esc(oldTokens[op.oldIdx]) + '</span>';
+      } else if (op.type === 'insert') {
+        newHtml += '<span class="char-highlight-add">' + esc(newTokens[op.newIdx]) + '</span>';
+      }
+    }
+
+    return { oldHtml, newHtml };
+  }
+
+  function tokenize(str) {
+    return str.match(/\S+|\s+/g) || [];
+  }
+
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ── Render diff ──
+  function renderDiff(diff) {
+    const { oldLines, newLines, ops } = diff;
+
+    let added = 0, removed = 0, unchanged = 0;
+    for (const op of ops) {
+      if (op.type === 'insert') added++;
+      else if (op.type === 'delete') removed++;
+      else unchanged++;
+    }
+
+    diffStats.innerHTML =
+      '<span class="stat-added">+' + added + ' added</span>' +
+      '<span class="stat-removed">-' + removed + ' removed</span>' +
+      '<span class="stat-unchanged">' + unchanged + ' unchanged</span>';
+
+    if (currentView === 'unified') {
+      renderUnified(diff, ops);
+    } else {
+      renderSplit(diff, ops);
+    }
+  }
+
+  function renderUnified(diff, ops) {
+    const { oldLines, newLines } = diff;
+    let html = '<table class="diff-table">';
+
+    // Group consecutive delete+insert as pairs for inline highlighting
+    const groups = groupOps(ops);
+
+    for (const group of groups) {
+      if (group.type === 'equal') {
+        for (const op of group.ops) {
+          html += '<tr class="diff-row-unchanged">' +
+            '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
+            '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
+            '<td class="line-type"></td>' +
+            '<td class="line-content">' + esc(oldLines[op.oldIdx]) + '</td></tr>';
+        }
+      } else {
+        const deletes = group.ops.filter(o => o.type === 'delete');
+        const inserts = group.ops.filter(o => o.type === 'insert');
+        const pairCount = Math.min(deletes.length, inserts.length);
+
+        for (let i = 0; i < deletes.length; i++) {
+          const op = deletes[i];
+          let content;
+          if (i < pairCount) {
+            content = wordDiff(oldLines[op.oldIdx], newLines[inserts[i].newIdx]).oldHtml;
+          } else {
+            content = esc(oldLines[op.oldIdx]);
+          }
+          html += '<tr class="diff-row-removed">' +
+            '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
+            '<td class="line-num"></td>' +
+            '<td class="line-type">-</td>' +
+            '<td class="line-content">' + content + '</td></tr>';
+        }
+
+        for (let i = 0; i < inserts.length; i++) {
+          const op = inserts[i];
+          let content;
+          if (i < pairCount) {
+            content = wordDiff(oldLines[deletes[i].oldIdx], newLines[op.newIdx]).newHtml;
+          } else {
+            content = esc(newLines[op.newIdx]);
+          }
+          html += '<tr class="diff-row-added">' +
+            '<td class="line-num"></td>' +
+            '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
+            '<td class="line-type">+</td>' +
+            '<td class="line-content">' + content + '</td></tr>';
+        }
+      }
+    }
+
+    html += '</table>';
+    diffScroll.innerHTML = ops.length === 0 && diff.oldLines.length === 0 && diff.newLines.length === 0
+      ? emptyStateHtml('Both inputs are empty')
+      : html;
+  }
+
+  function renderSplit(diff, ops) {
+    const { oldLines, newLines } = diff;
+    const groups = groupOps(ops);
+
+    let leftHtml = '<table class="diff-table">';
+    let rightHtml = '<table class="diff-table">';
+
+    for (const group of groups) {
+      if (group.type === 'equal') {
+        for (const op of group.ops) {
+          leftHtml += '<tr class="diff-row-unchanged"><td class="line-num">' + (op.oldIdx + 1) +
+            '</td><td class="line-content">' + esc(oldLines[op.oldIdx]) + '</td></tr>';
+          rightHtml += '<tr class="diff-row-unchanged"><td class="line-num">' + (op.newIdx + 1) +
+            '</td><td class="line-content">' + esc(newLines[op.newIdx]) + '</td></tr>';
+        }
+      } else {
+        const deletes = group.ops.filter(o => o.type === 'delete');
+        const inserts = group.ops.filter(o => o.type === 'insert');
+        const maxLen = Math.max(deletes.length, inserts.length);
+        const pairCount = Math.min(deletes.length, inserts.length);
+
+        for (let i = 0; i < maxLen; i++) {
+          if (i < deletes.length) {
+            const op = deletes[i];
+            let content;
+            if (i < pairCount) {
+              content = wordDiff(oldLines[op.oldIdx], newLines[inserts[i].newIdx]).oldHtml;
+            } else {
+              content = esc(oldLines[op.oldIdx]);
+            }
+            leftHtml += '<tr class="diff-row-removed"><td class="line-num">' + (op.oldIdx + 1) +
+              '</td><td class="line-content">' + content + '</td></tr>';
+          } else {
+            leftHtml += '<tr class="diff-row-unchanged"><td class="line-num"></td><td class="line-content"></td></tr>';
+          }
+
+          if (i < inserts.length) {
+            const op = inserts[i];
+            let content;
+            if (i < pairCount) {
+              content = wordDiff(oldLines[deletes[i].oldIdx], newLines[op.newIdx]).newHtml;
+            } else {
+              content = esc(newLines[op.newIdx]);
+            }
+            rightHtml += '<tr class="diff-row-added"><td class="line-num">' + (op.newIdx + 1) +
+              '</td><td class="line-content">' + content + '</td></tr>';
+          } else {
+            rightHtml += '<tr class="diff-row-unchanged"><td class="line-num"></td><td class="line-content"></td></tr>';
+          }
+        }
+      }
+    }
+
+    leftHtml += '</table>';
+    rightHtml += '</table>';
+
+    diffScroll.innerHTML =
+      '<div class="diff-side-wrapper">' +
+        '<div class="diff-side"><div class="diff-side-header">Original</div>' + leftHtml + '</div>' +
+        '<div class="diff-side"><div class="diff-side-header">Modified</div>' + rightHtml + '</div>' +
+      '</div>';
+  }
+
+  function groupOps(ops) {
+    const groups = [];
+    let current = null;
+
+    for (const op of ops) {
+      const gtype = op.type === 'equal' ? 'equal' : 'change';
+      if (!current || current.type !== gtype) {
+        current = { type: gtype, ops: [] };
+        groups.push(current);
+      }
+      current.ops.push(op);
+    }
+
+    return groups;
+  }
+
+  function emptyStateHtml(msg) {
+    return '<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg><p>' + msg + '</p></div>';
+  }
+
+  // Focus left input on load
+  leftInput.focus();
+})();
+</script>
+</body>
+</html>
