@@ -44,6 +44,14 @@
     overflow: hidden;
   }
 
+  .main-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
   /* ── Header ── */
   header {
     display: flex;
@@ -129,6 +137,33 @@
 
   .view-toggle button:not(.active):hover { background: var(--border); }
 
+  /* ── Resize Handle ── */
+  .resize-handle {
+    height: 6px;
+    background: var(--border);
+    cursor: row-resize;
+    flex-shrink: 0;
+    position: relative;
+    transition: background 0.15s ease;
+  }
+
+  .resize-handle:hover, .resize-handle.dragging {
+    background: var(--accent);
+  }
+
+  .resize-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 32px;
+    height: 2px;
+    background: var(--text-muted);
+    border-radius: 1px;
+    opacity: 0.5;
+  }
+
   /* ── Input Area ── */
   .input-area {
     display: grid;
@@ -136,6 +171,12 @@
     gap: 0;
     flex: 1;
     min-height: 0;
+  }
+
+  .input-area.has-diff {
+    flex: none;
+    height: 250px;
+    min-height: 80px;
   }
 
   .input-pane {
@@ -197,7 +238,6 @@
   }
 
   .diff-area.visible { display: flex; }
-  .input-area.hidden { display: none; }
 
   .diff-toolbar {
     display: flex;
@@ -349,6 +389,65 @@
     max-width: 320px;
   }
 
+  /* ── Diff Navigation ── */
+  .diff-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .diff-nav .btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .diff-nav-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 40px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Diff Scroll Wrapper (scroll + minimap) ── */
+  .diff-scroll-wrapper {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+
+  /* ── Minimap ── */
+  .diff-minimap {
+    width: 20px;
+    flex-shrink: 0;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+  }
+
+  .minimap-marker {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    min-height: 2px;
+    border-radius: 1px;
+  }
+
+  .minimap-marker.added { background: var(--added-text); opacity: 0.7; }
+  .minimap-marker.removed { background: var(--removed-text); opacity: 0.7; }
+
+  .minimap-viewport {
+    position: absolute;
+    left: 0;
+    right: 0;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
   /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -388,29 +487,42 @@
     </div>
   </header>
 
-  <div class="input-area" id="inputArea">
-    <div class="input-pane">
-      <div class="pane-header">
-        <span class="pane-label">Original</span>
-        <span class="char-count" id="leftCount">0 chars</span>
+  <div class="main-content" id="mainContent">
+    <div class="input-area" id="inputArea">
+      <div class="input-pane">
+        <div class="pane-header">
+          <span class="pane-label">Original</span>
+          <span class="char-count" id="leftCount">0 chars</span>
+        </div>
+        <textarea id="leftInput" placeholder="Paste original text here..." spellcheck="false"></textarea>
       </div>
-      <textarea id="leftInput" placeholder="Paste original text here..." spellcheck="false"></textarea>
-    </div>
-    <div class="input-pane">
-      <div class="pane-header">
-        <span class="pane-label">Modified</span>
-        <span class="char-count" id="rightCount">0 chars</span>
+      <div class="input-pane">
+        <div class="pane-header">
+          <span class="pane-label">Modified</span>
+          <span class="char-count" id="rightCount">0 chars</span>
+        </div>
+        <textarea id="rightInput" placeholder="Paste modified text here..." spellcheck="false"></textarea>
       </div>
-      <textarea id="rightInput" placeholder="Paste modified text here..." spellcheck="false"></textarea>
     </div>
-  </div>
 
-  <div class="diff-area" id="diffArea">
-    <div class="diff-toolbar">
-      <div class="diff-stats" id="diffStats"></div>
-      <button class="btn" id="editBtn">&#9998; Edit</button>
+    <div class="resize-handle" id="resizeHandle" style="display:none;"></div>
+
+    <div class="diff-area" id="diffArea">
+      <div class="diff-toolbar">
+        <div class="diff-stats" id="diffStats"></div>
+        <div class="diff-nav">
+          <button class="btn" id="prevDiffBtn" title="Previous change (Alt+&#8593;)">&#9650; Prev</button>
+          <span class="diff-nav-label" id="diffNavLabel"></span>
+          <button class="btn" id="nextDiffBtn" title="Next change (Alt+&#8595;)">&#9660; Next</button>
+        </div>
+      </div>
+      <div class="diff-scroll-wrapper">
+        <div class="diff-scroll" id="diffScroll"></div>
+        <div class="diff-minimap" id="diffMinimap">
+          <div class="minimap-viewport" id="minimapViewport"></div>
+        </div>
+      </div>
     </div>
-    <div class="diff-scroll" id="diffScroll"></div>
   </div>
 </div>
 
@@ -423,15 +535,22 @@
   const diffBtn = document.getElementById('diffBtn');
   const clearBtn = document.getElementById('clearBtn');
   const swapBtn = document.getElementById('swapBtn');
-  const editBtn = document.getElementById('editBtn');
   const inputArea = document.getElementById('inputArea');
   const diffArea = document.getElementById('diffArea');
   const diffScroll = document.getElementById('diffScroll');
   const diffStats = document.getElementById('diffStats');
   const viewToggle = document.getElementById('viewToggle');
+  const resizeHandle = document.getElementById('resizeHandle');
+  const prevDiffBtn = document.getElementById('prevDiffBtn');
+  const nextDiffBtn = document.getElementById('nextDiffBtn');
+  const diffNavLabel = document.getElementById('diffNavLabel');
+  const diffMinimap = document.getElementById('diffMinimap');
+  const minimapViewport = document.getElementById('minimapViewport');
 
   let currentView = 'unified';
   let lastDiff = null;
+  let changeGroups = []; // DOM elements for each change group
+  let currentChangeIdx = -1;
 
   // Character counts
   leftInput.addEventListener('input', () => {
@@ -461,12 +580,6 @@
     }
   });
 
-  // Back to edit
-  editBtn.addEventListener('click', () => {
-    diffArea.classList.remove('visible');
-    inputArea.classList.remove('hidden');
-  });
-
   // Clear
   clearBtn.addEventListener('click', () => {
     leftInput.value = '';
@@ -475,7 +588,9 @@
     rightCount.textContent = '0 chars';
     lastDiff = null;
     diffArea.classList.remove('visible');
-    inputArea.classList.remove('hidden');
+    resizeHandle.style.display = 'none';
+    inputArea.classList.remove('has-diff');
+    inputArea.style.height = '';
     leftInput.focus();
   });
 
@@ -492,10 +607,124 @@
     const a = leftInput.value;
     const b = rightInput.value;
     lastDiff = computeDiff(a, b);
-    inputArea.classList.add('hidden');
+    inputArea.classList.add('has-diff');
+    resizeHandle.style.display = '';
     diffArea.classList.add('visible');
     renderDiff(lastDiff);
   }
+
+  // ── Resize handle ──
+  let isResizing = false;
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    resizeHandle.classList.add('dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return;
+    const mainContent = document.getElementById('mainContent');
+    const rect = mainContent.getBoundingClientRect();
+    const offset = e.clientY - rect.top;
+    const minH = 80;
+    const maxH = rect.height - 150;
+    const newH = Math.max(minH, Math.min(maxH, offset));
+    inputArea.style.height = newH + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isResizing) return;
+    isResizing = false;
+    resizeHandle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+
+  // ── Diff navigation ──
+  prevDiffBtn.addEventListener('click', () => jumpDiff(-1));
+  nextDiffBtn.addEventListener('click', () => jumpDiff(1));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); jumpDiff(-1); }
+    if (e.altKey && e.key === 'ArrowDown') { e.preventDefault(); jumpDiff(1); }
+  });
+
+  function jumpDiff(dir) {
+    if (changeGroups.length === 0) return;
+    currentChangeIdx += dir;
+    if (currentChangeIdx < 0) currentChangeIdx = changeGroups.length - 1;
+    if (currentChangeIdx >= changeGroups.length) currentChangeIdx = 0;
+    updateNavLabel();
+    const el = changeGroups[currentChangeIdx];
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Flash highlight
+    el.style.outline = '2px solid ' + 'var(--accent)';
+    el.style.outlineOffset = '-2px';
+    setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 800);
+  }
+
+  function updateNavLabel() {
+    if (changeGroups.length === 0) {
+      diffNavLabel.textContent = '';
+    } else {
+      diffNavLabel.textContent = (currentChangeIdx + 1) + '/' + changeGroups.length;
+    }
+  }
+
+  // ── Minimap ──
+  function updateMinimap() {
+    // Clear existing markers (keep viewport element)
+    diffMinimap.querySelectorAll('.minimap-marker').forEach(m => m.remove());
+
+    const scrollEl = diffScroll;
+    const totalHeight = scrollEl.scrollHeight;
+    if (totalHeight === 0) return;
+    const mapHeight = diffMinimap.clientHeight;
+
+    // Find all change rows
+    const rows = scrollEl.querySelectorAll('.diff-row-added, .diff-row-removed');
+    rows.forEach(row => {
+      const top = row.offsetTop;
+      const height = row.offsetHeight;
+      const marker = document.createElement('div');
+      marker.className = 'minimap-marker ' + (row.classList.contains('diff-row-added') ? 'added' : 'removed');
+      const mTop = (top / totalHeight) * mapHeight;
+      const mH = Math.max(2, (height / totalHeight) * mapHeight);
+      marker.style.top = mTop + 'px';
+      marker.style.height = mH + 'px';
+      diffMinimap.appendChild(marker);
+    });
+
+    updateMinimapViewport();
+  }
+
+  function updateMinimapViewport() {
+    const scrollEl = diffScroll;
+    const totalHeight = scrollEl.scrollHeight;
+    const mapHeight = diffMinimap.clientHeight;
+    if (totalHeight === 0) { minimapViewport.style.display = 'none'; return; }
+    minimapViewport.style.display = '';
+    const vTop = (scrollEl.scrollTop / totalHeight) * mapHeight;
+    const vH = (scrollEl.clientHeight / totalHeight) * mapHeight;
+    minimapViewport.style.top = vTop + 'px';
+    minimapViewport.style.height = vH + 'px';
+  }
+
+  diffScroll.addEventListener('scroll', updateMinimapViewport);
+
+  diffMinimap.addEventListener('click', (e) => {
+    const rect = diffMinimap.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const ratio = y / rect.height;
+    const scrollEl = diffScroll;
+    scrollEl.scrollTop = ratio * scrollEl.scrollHeight - scrollEl.clientHeight / 2;
+  });
+
+  window.addEventListener('resize', () => {
+    if (lastDiff) requestAnimationFrame(() => updateMinimap());
+  });
 
   // ── Myers diff algorithm ──
   function computeDiff(oldText, newText) {
@@ -626,14 +855,22 @@
     } else {
       renderSplit(diff, ops);
     }
+
+    // Collect change group elements for navigation
+    changeGroups = Array.from(diffScroll.querySelectorAll('[data-change-first]'));
+    currentChangeIdx = -1;
+    updateNavLabel();
+
+    // Update minimap after DOM is ready
+    requestAnimationFrame(() => updateMinimap());
   }
 
   function renderUnified(diff, ops) {
     const { oldLines, newLines } = diff;
     let html = '<table class="diff-table">';
 
-    // Group consecutive delete+insert as pairs for inline highlighting
     const groups = groupOps(ops);
+    let changeGroupIdx = 0;
 
     for (const group of groups) {
       if (group.type === 'equal') {
@@ -648,6 +885,8 @@
         const deletes = group.ops.filter(o => o.type === 'delete');
         const inserts = group.ops.filter(o => o.type === 'insert');
         const pairCount = Math.min(deletes.length, inserts.length);
+        const gAttr = ' data-change-group="' + changeGroupIdx + '"';
+        let first = true;
 
         for (let i = 0; i < deletes.length; i++) {
           const op = deletes[i];
@@ -657,11 +896,12 @@
           } else {
             content = esc(oldLines[op.oldIdx]);
           }
-          html += '<tr class="diff-row-removed">' +
+          html += '<tr class="diff-row-removed"' + gAttr + (first ? ' data-change-first' : '') + '>' +
             '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
             '<td class="line-num"></td>' +
             '<td class="line-type">-</td>' +
             '<td class="line-content">' + content + '</td></tr>';
+          first = false;
         }
 
         for (let i = 0; i < inserts.length; i++) {
@@ -672,12 +912,14 @@
           } else {
             content = esc(newLines[op.newIdx]);
           }
-          html += '<tr class="diff-row-added">' +
+          html += '<tr class="diff-row-added"' + gAttr + (first ? ' data-change-first' : '') + '>' +
             '<td class="line-num"></td>' +
             '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
             '<td class="line-type">+</td>' +
             '<td class="line-content">' + content + '</td></tr>';
+          first = false;
         }
+        changeGroupIdx++;
       }
     }
 
@@ -690,6 +932,7 @@
   function renderSplit(diff, ops) {
     const { oldLines, newLines } = diff;
     const groups = groupOps(ops);
+    let changeGroupIdx = 0;
 
     let leftHtml = '<table class="diff-table">';
     let rightHtml = '<table class="diff-table">';
@@ -707,8 +950,10 @@
         const inserts = group.ops.filter(o => o.type === 'insert');
         const maxLen = Math.max(deletes.length, inserts.length);
         const pairCount = Math.min(deletes.length, inserts.length);
+        const gAttr = ' data-change-group="' + changeGroupIdx + '"';
 
         for (let i = 0; i < maxLen; i++) {
+          const isFirst = (i === 0);
           if (i < deletes.length) {
             const op = deletes[i];
             let content;
@@ -717,7 +962,7 @@
             } else {
               content = esc(oldLines[op.oldIdx]);
             }
-            leftHtml += '<tr class="diff-row-removed"><td class="line-num">' + (op.oldIdx + 1) +
+            leftHtml += '<tr class="diff-row-removed"' + gAttr + (isFirst ? ' data-change-first' : '') + '><td class="line-num">' + (op.oldIdx + 1) +
               '</td><td class="line-content">' + content + '</td></tr>';
           } else {
             leftHtml += '<tr class="diff-row-unchanged"><td class="line-num"></td><td class="line-content"></td></tr>';
@@ -731,12 +976,13 @@
             } else {
               content = esc(newLines[op.newIdx]);
             }
-            rightHtml += '<tr class="diff-row-added"><td class="line-num">' + (op.newIdx + 1) +
+            rightHtml += '<tr class="diff-row-added"' + gAttr + '><td class="line-num">' + (op.newIdx + 1) +
               '</td><td class="line-content">' + content + '</td></tr>';
           } else {
             rightHtml += '<tr class="diff-row-unchanged"><td class="line-num"></td><td class="line-content"></td></tr>';
           }
         }
+        changeGroupIdx++;
       }
     }
 
