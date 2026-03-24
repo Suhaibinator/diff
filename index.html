@@ -456,11 +456,83 @@
 
   /* ── Responsive ── */
   @media (max-width: 768px) {
-    header { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }
-    .input-area { grid-template-columns: 1fr; }
-    .input-pane { border-right: none !important; border-bottom: 1px solid var(--border); }
+    header {
+      padding: 10px 12px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .logo { font-size: 15px; gap: 8px; }
+    .logo-icon { width: 28px; height: 28px; font-size: 14px; border-radius: 6px; }
+
+    .controls {
+      width: 100%;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .controls .btn {
+      padding: 7px 10px;
+      font-size: 12px;
+    }
+
+    .view-toggle button {
+      padding: 6px 10px;
+      font-size: 11px;
+    }
+
+    .input-area {
+      grid-template-columns: 1fr;
+    }
+
+    .input-area.has-diff {
+      height: 180px;
+    }
+
+    .input-pane {
+      border-right: none !important;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .pane-header { padding: 8px 12px; }
+    .pane-label { font-size: 11px; }
+
+    textarea {
+      font-size: 12px;
+      padding: 10px 12px;
+      line-height: 1.6;
+    }
+
+    /* Diff output */
+    .diff-toolbar {
+      padding: 8px 10px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .diff-stats { gap: 10px; font-size: 12px; }
+
+    .diff-nav .btn { padding: 5px 8px; font-size: 11px; }
+    .diff-nav-label { font-size: 11px; min-width: 32px; }
+
+    .diff-table { font-size: 11px; line-height: 1.6; }
+    .diff-table td { padding: 0 6px; }
+    .diff-table .line-num { width: 32px; min-width: 32px; padding: 0 4px; font-size: 10px; }
+    .diff-table .line-type { width: 16px; min-width: 16px; }
+
     .diff-side-wrapper { grid-template-columns: 1fr; }
     .diff-side { border-right: none !important; border-bottom: 1px solid var(--border); }
+    .diff-side .line-num { width: 32px; min-width: 32px; }
+    .diff-side-header { padding: 6px 12px; font-size: 11px; }
+
+    .diff-minimap { width: 14px; }
+
+    .empty-state { padding: 30px 16px; }
+    .empty-state p { font-size: 13px; }
+
+    /* Resize handle: wider touch target */
+    .resize-handle { height: 10px; }
+    .resize-handle::after { width: 40px; }
   }
 </style>
 </head>
@@ -615,32 +687,48 @@
 
   // ── Resize handle ──
   let isResizing = false;
-  resizeHandle.addEventListener('mousedown', (e) => {
+
+  function startResize(e) {
     isResizing = true;
     resizeHandle.classList.add('dragging');
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
     e.preventDefault();
-  });
+  }
 
-  document.addEventListener('mousemove', (e) => {
+  function doResize(clientY) {
     if (!isResizing) return;
     const mainContent = document.getElementById('mainContent');
     const rect = mainContent.getBoundingClientRect();
-    const offset = e.clientY - rect.top;
+    const offset = clientY - rect.top;
     const minH = 80;
     const maxH = rect.height - 150;
     const newH = Math.max(minH, Math.min(maxH, offset));
     inputArea.style.height = newH + 'px';
-  });
+  }
 
-  document.addEventListener('mouseup', () => {
+  function endResize() {
     if (!isResizing) return;
     isResizing = false;
     resizeHandle.classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-  });
+  }
+
+  resizeHandle.addEventListener('mousedown', startResize);
+  document.addEventListener('mousemove', (e) => doResize(e.clientY));
+  document.addEventListener('mouseup', endResize);
+
+  // Touch support for resize
+  resizeHandle.addEventListener('touchstart', (e) => {
+    startResize(e);
+  }, { passive: false });
+  document.addEventListener('touchmove', (e) => {
+    if (!isResizing) return;
+    e.preventDefault();
+    doResize(e.touches[0].clientY);
+  }, { passive: false });
+  document.addEventListener('touchend', endResize);
 
   // ── Diff navigation ──
   prevDiffBtn.addEventListener('click', () => jumpDiff(-1));
