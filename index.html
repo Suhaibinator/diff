@@ -2508,7 +2508,47 @@ function computeDiff(aText, bText, opts) {
     ops.push({ type: 'equal', oldIdx: aKeys.length - s, newIdx: bKeys.length - s });
   }
 
-  return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops, truncated };
+  const finalOps = opts.ignoreWhitespace === 'all'
+    ? mergeWhitespaceOnlyRuns(ops, aKeys, bKeys)
+    : ops;
+
+  return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops: finalOps, truncated };
+}
+
+// Under ignoreWhitespace 'all', a newline is whitespace too: a change run that
+// only redistributes content across line boundaries ("}\nelse {" vs "} else {")
+// or adds/removes blank lines is not a real change. Detect such runs by
+// concatenating each side's normalized keys; when they match, replace the run
+// with equal ops. Lines pair up 1:1 in order; the longer side's leftovers
+// become one-sided equal ops carrying only oldIdx or only newIdx.
+function mergeWhitespaceOnlyRuns(ops, aKeys, bKeys) {
+  const out = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'equal') { out.push(ops[i]); i++; continue; }
+    let j = i;
+    while (j < ops.length && ops[j].type !== 'equal') j++;
+    const run = ops.slice(i, j);
+    const dels = run.filter(o => o.type === 'delete');
+    const ins = run.filter(o => o.type === 'insert');
+    let oldJoined = '';
+    for (const o of dels) oldJoined += aKeys[o.oldIdx];
+    let newJoined = '';
+    for (const o of ins) newJoined += bKeys[o.newIdx];
+    if (oldJoined === newJoined) {
+      const n = Math.max(dels.length, ins.length);
+      for (let k = 0; k < n; k++) {
+        const op = { type: 'equal' };
+        if (k < dels.length) op.oldIdx = dels[k].oldIdx;
+        if (k < ins.length) op.newIdx = ins[k].newIdx;
+        out.push(op);
+      }
+    } else {
+      for (const o of run) out.push(o);
+    }
+    i = j;
+  }
+  return out;
 }
 
 // Character-offset ranges of the differing parts of a paired old/new line.
@@ -2575,7 +2615,15 @@ function generateUnifiedPatch(diff, opts) {
   const context = options.context === undefined ? 3 : options.context;
   const oldName = options.oldName === undefined ? 'original' : options.oldName;
   const newName = options.newName === undefined ? 'modified' : options.newName;
-  const ops = diff.ops;
+  // One-sided equal ops (whitespace-only line joins/splits under the
+  // ignore-all-whitespace option) cannot become context lines — a context line
+  // consumes one line on both sides — so emit them as real changes.
+  const ops = diff.ops.map(op => {
+    if (op.type !== 'equal') return op;
+    if (op.oldIdx == null) return { type: 'insert', newIdx: op.newIdx };
+    if (op.newIdx == null) return { type: 'delete', oldIdx: op.oldIdx };
+    return op;
+  });
   const header = '--- a/' + oldName + '\n+++ b/' + newName + '\n';
 
   // Cumulative line counts consumed on each side before op k.
@@ -3143,12 +3191,15 @@ function buildUnifiedHtml(diff, opts) {
         const op = group.ops[i];
         const hidden = plan && i >= plan.headKeep && i < group.ops.length - plan.tailKeep;
         if (hidden && i === plan.headKeep) html += expanderRowHtml(collapseId, plan.hiddenCount, 4);
-        const content = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
-          ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
+        // Equal ops from whitespace-only line joins/splits may carry only one
+        // side; show whichever side exists and leave the other number blank.
+        const content = op.oldIdx != null
+          ? ((opts.hlOld && opts.hlOld[op.oldIdx] != null) ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]))
+          : ((opts.hlNew && opts.hlNew[op.newIdx] != null) ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]));
         html += '<tr class="diff-row-unchanged' + (hidden ? ' collapse-hidden' : '') + '"' +
           (hidden ? ' data-collapse-id="' + collapseId + '"' : '') + '>' +
-          '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
-          '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
+          '<td class="line-num">' + (op.oldIdx != null ? op.oldIdx + 1 : '') + '</td>' +
+          '<td class="line-num">' + (op.newIdx != null ? op.newIdx + 1 : '') + '</td>' +
           '<td class="line-type"></td>' +
           '<td class="line-content">' + content + '</td></tr>';
       }
@@ -3225,14 +3276,24 @@ function buildSplitHtml(diff, opts) {
         }
         const rowCls = 'diff-row-unchanged' + (hidden ? ' collapse-hidden' : '');
         const idAttr = hidden ? ' data-collapse-id="' + collapseId + '"' : '';
-        const oldContent = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
-          ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
-        const newContent = (opts.hlNew && opts.hlNew[op.newIdx] != null)
-          ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]);
-        leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.oldIdx + 1) +
-          '</td><td class="line-content">' + oldContent + '</td></tr>';
-        rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.newIdx + 1) +
-          '</td><td class="line-content">' + newContent + '</td></tr>';
+        // Equal ops from whitespace-only line joins/splits may carry only one
+        // side; pad the other side so the columns stay aligned.
+        if (op.oldIdx != null) {
+          const oldContent = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
+            ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
+          leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.oldIdx + 1) +
+            '</td><td class="line-content">' + oldContent + '</td></tr>';
+        } else {
+          leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num"></td><td class="line-content"></td></tr>';
+        }
+        if (op.newIdx != null) {
+          const newContent = (opts.hlNew && opts.hlNew[op.newIdx] != null)
+            ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]);
+          rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.newIdx + 1) +
+            '</td><td class="line-content">' + newContent + '</td></tr>';
+        } else {
+          rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num"></td><td class="line-content"></td></tr>';
+        }
       }
       if (plan) collapseId++;
     } else {

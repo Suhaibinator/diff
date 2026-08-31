@@ -133,7 +133,47 @@ function computeDiff(aText, bText, opts) {
     ops.push({ type: 'equal', oldIdx: aKeys.length - s, newIdx: bKeys.length - s });
   }
 
-  return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops, truncated };
+  const finalOps = opts.ignoreWhitespace === 'all'
+    ? mergeWhitespaceOnlyRuns(ops, aKeys, bKeys)
+    : ops;
+
+  return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops: finalOps, truncated };
+}
+
+// Under ignoreWhitespace 'all', a newline is whitespace too: a change run that
+// only redistributes content across line boundaries ("}\nelse {" vs "} else {")
+// or adds/removes blank lines is not a real change. Detect such runs by
+// concatenating each side's normalized keys; when they match, replace the run
+// with equal ops. Lines pair up 1:1 in order; the longer side's leftovers
+// become one-sided equal ops carrying only oldIdx or only newIdx.
+function mergeWhitespaceOnlyRuns(ops, aKeys, bKeys) {
+  const out = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'equal') { out.push(ops[i]); i++; continue; }
+    let j = i;
+    while (j < ops.length && ops[j].type !== 'equal') j++;
+    const run = ops.slice(i, j);
+    const dels = run.filter(o => o.type === 'delete');
+    const ins = run.filter(o => o.type === 'insert');
+    let oldJoined = '';
+    for (const o of dels) oldJoined += aKeys[o.oldIdx];
+    let newJoined = '';
+    for (const o of ins) newJoined += bKeys[o.newIdx];
+    if (oldJoined === newJoined) {
+      const n = Math.max(dels.length, ins.length);
+      for (let k = 0; k < n; k++) {
+        const op = { type: 'equal' };
+        if (k < dels.length) op.oldIdx = dels[k].oldIdx;
+        if (k < ins.length) op.newIdx = ins[k].newIdx;
+        out.push(op);
+      }
+    } else {
+      for (const o of run) out.push(o);
+    }
+    i = j;
+  }
+  return out;
 }
 
 // Character-offset ranges of the differing parts of a paired old/new line.
