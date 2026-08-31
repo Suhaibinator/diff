@@ -7,7 +7,15 @@ function generateUnifiedPatch(diff, opts) {
   const context = options.context === undefined ? 3 : options.context;
   const oldName = options.oldName === undefined ? 'original' : options.oldName;
   const newName = options.newName === undefined ? 'modified' : options.newName;
-  const ops = diff.ops;
+  // One-sided equal ops (whitespace-only line joins/splits under the
+  // ignore-all-whitespace option) cannot become context lines — a context line
+  // consumes one line on both sides — so emit them as real changes.
+  const ops = diff.ops.map(op => {
+    if (op.type !== 'equal') return op;
+    if (op.oldIdx == null) return { type: 'insert', newIdx: op.newIdx };
+    if (op.newIdx == null) return { type: 'delete', oldIdx: op.oldIdx };
+    return op;
+  });
   const header = '--- a/' + oldName + '\n+++ b/' + newName + '\n';
 
   // Cumulative line counts consumed on each side before op k.

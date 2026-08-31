@@ -83,6 +83,37 @@ test('whitespace and case normalization options', () => {
   assert.deepEqual(opCounts(d4.ops), { equal: 0, insert: 1, delete: 1 });
 });
 
+test('ignore-all-whitespace treats line joins/splits as unchanged', () => {
+  // "}\nelse {" vs "} else {" only moves a newline — whitespace under 'all'.
+  const oldT = 'if (x) {\n  a();\n}\nelse {\n  b();\n}\n';
+  const newT = 'if (x) {\n  a();\n} else {\n  b();\n}\n';
+  const d = computeDiff(oldT, newT, { ignoreWhitespace: 'all' });
+  assert.deepEqual(opCounts(d.ops).insert, 0);
+  assert.deepEqual(opCounts(d.ops).delete, 0);
+  // The extra old line becomes a one-sided equal op.
+  const oneSided = d.ops.filter(o => o.type === 'equal' && (o.oldIdx == null || o.newIdx == null));
+  assert.equal(oneSided.length, 1);
+  assert.equal(d.oldLines[oneSided[0].oldIdx], 'else {');
+
+  // Without the option the same change still shows as a real diff.
+  const plain = computeDiff(oldT, newT, {});
+  assert.ok(plain.ops.some(o => o.type !== 'equal'));
+  const trimmed = computeDiff(oldT, newT, { ignoreWhitespace: 'trim' });
+  assert.ok(trimmed.ops.some(o => o.type !== 'equal'));
+});
+
+test('ignore-all-whitespace treats added/removed blank lines as unchanged', () => {
+  const d = computeDiff('a\n\n\nb\n', 'a\nb\n', { ignoreWhitespace: 'all' });
+  assert.deepEqual(opCounts(d.ops).insert, 0);
+  assert.deepEqual(opCounts(d.ops).delete, 0);
+});
+
+test('ignore-all-whitespace still reports real changes next to rewrapping', () => {
+  // Content changes (b -> B) inside a run that also rewraps lines.
+  const d = computeDiff('a b\nc\n', 'a\nB c\n', { ignoreWhitespace: 'all' });
+  assert.ok(d.ops.some(o => o.type !== 'equal'));
+});
+
 test('maxD cap falls back to block replacement and flags truncated', () => {
   const a = Array.from({ length: 50 }, (_, i) => 'a' + i).join('\n');
   const b = Array.from({ length: 50 }, (_, i) => 'b' + i).join('\n');

@@ -79,12 +79,15 @@ function buildUnifiedHtml(diff, opts) {
         const op = group.ops[i];
         const hidden = plan && i >= plan.headKeep && i < group.ops.length - plan.tailKeep;
         if (hidden && i === plan.headKeep) html += expanderRowHtml(collapseId, plan.hiddenCount, 4);
-        const content = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
-          ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
+        // Equal ops from whitespace-only line joins/splits may carry only one
+        // side; show whichever side exists and leave the other number blank.
+        const content = op.oldIdx != null
+          ? ((opts.hlOld && opts.hlOld[op.oldIdx] != null) ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]))
+          : ((opts.hlNew && opts.hlNew[op.newIdx] != null) ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]));
         html += '<tr class="diff-row-unchanged' + (hidden ? ' collapse-hidden' : '') + '"' +
           (hidden ? ' data-collapse-id="' + collapseId + '"' : '') + '>' +
-          '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
-          '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
+          '<td class="line-num">' + (op.oldIdx != null ? op.oldIdx + 1 : '') + '</td>' +
+          '<td class="line-num">' + (op.newIdx != null ? op.newIdx + 1 : '') + '</td>' +
           '<td class="line-type"></td>' +
           '<td class="line-content">' + content + '</td></tr>';
       }
@@ -161,14 +164,24 @@ function buildSplitHtml(diff, opts) {
         }
         const rowCls = 'diff-row-unchanged' + (hidden ? ' collapse-hidden' : '');
         const idAttr = hidden ? ' data-collapse-id="' + collapseId + '"' : '';
-        const oldContent = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
-          ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
-        const newContent = (opts.hlNew && opts.hlNew[op.newIdx] != null)
-          ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]);
-        leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.oldIdx + 1) +
-          '</td><td class="line-content">' + oldContent + '</td></tr>';
-        rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.newIdx + 1) +
-          '</td><td class="line-content">' + newContent + '</td></tr>';
+        // Equal ops from whitespace-only line joins/splits may carry only one
+        // side; pad the other side so the columns stay aligned.
+        if (op.oldIdx != null) {
+          const oldContent = (opts.hlOld && opts.hlOld[op.oldIdx] != null)
+            ? opts.hlOld[op.oldIdx] : esc(oldLines[op.oldIdx]);
+          leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.oldIdx + 1) +
+            '</td><td class="line-content">' + oldContent + '</td></tr>';
+        } else {
+          leftHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num"></td><td class="line-content"></td></tr>';
+        }
+        if (op.newIdx != null) {
+          const newContent = (opts.hlNew && opts.hlNew[op.newIdx] != null)
+            ? opts.hlNew[op.newIdx] : esc(newLines[op.newIdx]);
+          rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num">' + (op.newIdx + 1) +
+            '</td><td class="line-content">' + newContent + '</td></tr>';
+        } else {
+          rightHtml += '<tr class="' + rowCls + '"' + idAttr + '><td class="line-num"></td><td class="line-content"></td></tr>';
+        }
       }
       if (plan) collapseId++;
     } else {
