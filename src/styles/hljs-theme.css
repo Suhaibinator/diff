@@ -1,0 +1,53 @@
+/* highlight.js token theme, scoped under .line-content so it cannot leak.
+   Colors only — no backgrounds — so diff row tints (#12261e / #2a1215) and
+   .char-highlight-* overlays always show through. Token colors are kept
+   clearly apart from the add/remove marks (--added-text #6fdd8b,
+   --removed-text #f47067): strings are teal rather than green, and pinks
+   stay far from the removal red. */
+
+.line-content .hljs-keyword,
+.line-content .hljs-name,
+.line-content .hljs-selector-tag { color: #b39afd; }
+
+.line-content .hljs-string,
+.line-content .hljs-regexp { color: #5ec6d8; }
+
+.line-content .hljs-number,
+.line-content .hljs-literal,
+.line-content .hljs-symbol,
+.line-content .hljs-bullet { color: #e0b163; }
+
+.line-content .hljs-comment,
+.line-content .hljs-doctag { color: var(--text-muted); font-style: italic; }
+
+.line-content .hljs-title,
+.line-content .hljs-title.function_,
+.line-content .hljs-section,
+.line-content .hljs-selector-id { color: #86b4f7; }
+
+.line-content .hljs-title.class_,
+.line-content .hljs-type,
+.line-content .hljs-built_in,
+.line-content .hljs-selector-class { color: #74d4e7; }
+
+.line-content .hljs-attr,
+.line-content .hljs-attribute,
+.line-content .hljs-property { color: #e3a6cd; }
+
+.line-content .hljs-variable,
+.line-content .hljs-template-variable,
+.line-content .hljs-params,
+.line-content .hljs-subst { color: #d5d9ea; }
+
+.line-content .hljs-meta,
+.line-content .hljs-tag,
+.line-content .hljs-operator,
+.line-content .hljs-punctuation { color: #9aa0b8; }
+
+.line-content .hljs-emphasis { font-style: italic; }
+
+.line-content .hljs-strong { font-weight: 700; }
+
+.line-content .hljs-addition { color: var(--added-text, #6fdd8b); }
+
+.line-content .hljs-deletion { color: var(--removed-text, #f47067); }
