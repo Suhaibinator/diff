@@ -20,6 +20,9 @@
     --highlight-add: rgba(63, 185, 80, 0.25);
     --highlight-remove: rgba(248, 81, 73, 0.25);
     --unchanged-gutter: #1c1f2e;
+    --moved-bg: #10222f;
+    --moved-text: #58b7e6;
+    --moved-gutter: #16344a;
   }
 
   html, body {
@@ -251,6 +254,7 @@
 
   .stat-added { color: var(--added-text); }
   .stat-removed { color: var(--removed-text); }
+  .stat-moved { color: var(--moved-text); }
   .stat-unchanged { color: var(--text-muted); }
 
   .diff-scroll {
@@ -313,6 +317,25 @@
 
   .diff-row-unchanged .line-num { background: var(--unchanged-gutter); }
   .diff-row-unchanged .line-type { background: var(--unchanged-gutter); }
+
+  .diff-row-moved-out,
+  .diff-row-moved-in {
+    background: var(--moved-bg);
+    cursor: pointer;
+  }
+
+  .diff-row-moved-out .line-num, .diff-row-moved-in .line-num { background: var(--moved-gutter); }
+  .diff-row-moved-out .line-type, .diff-row-moved-in .line-type { color: var(--moved-text); background: var(--moved-gutter); }
+  .diff-row-moved-out .line-content, .diff-row-moved-in .line-content { color: var(--moved-text); }
+
+  /* Split view has no line-type cell — badge the line-num gutter instead. */
+  .diff-side .diff-row-moved-out .line-num::after,
+  .diff-side .diff-row-moved-in .line-num::after {
+    content: '\21C5';
+    margin-left: 4px;
+    color: var(--moved-text);
+    opacity: 0.7;
+  }
 
   .diff-row-separator td {
     background: var(--surface-2);
@@ -430,6 +453,7 @@
 
   .minimap-marker.added { background: var(--added-text); opacity: 0.7; }
   .minimap-marker.removed { background: var(--removed-text); opacity: 0.7; }
+  .minimap-marker.moved { background: var(--moved-text); opacity: 0.7; }
 
   .minimap-viewport {
     position: absolute;

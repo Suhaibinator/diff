@@ -92,17 +92,40 @@ function myersBacktrack(trace, a, b) {
   return ops;
 }
 
+// Key-source text for a line under ignore-comments. Untouched lines keep
+// their exact text (indentation stays significant); a line stripping emptied
+// becomes '', and a trailing removed comment doesn't leave phantom
+// whitespace behind.
+function commentKeySource(raw, src) {
+  if (src === raw) return raw;
+  if (/^\s*$/.test(src)) return '';
+  return src.replace(/\s+$/, '');
+}
+
 // Full line-level diff with normalization options.
-// opts: { ignoreWhitespace: 'none'|'trim'|'all', ignoreCase: bool, maxD?: number }
+// opts: { ignoreWhitespace: 'none'|'trim'|'all', ignoreCase: bool, maxD?: number,
+//         detectMoves?: bool, aKeySource?: string[], bKeySource?: string[] }
+// aKeySource/bKeySource: per-line comment-stripped text (from stripComments);
+// keys are built from them while the original lines are what's displayed.
 function computeDiff(aText, bText, opts) {
   opts = opts || {};
   const sa = splitLines(aText);
   const sb = splitLines(bText);
   const oldLines = sa.lines;
   const newLines = sb.lines;
-  const plain = opts.ignoreWhitespace !== 'trim' && opts.ignoreWhitespace !== 'all' && !opts.ignoreCase;
-  const aKeys = plain ? oldLines : oldLines.map(l => normKey(l, opts));
-  const bKeys = plain ? newLines : newLines.map(l => normKey(l, opts));
+  const aSrc = (opts.aKeySource && opts.aKeySource.length === oldLines.length &&
+                opts.bKeySource && opts.bKeySource.length === newLines.length)
+    ? opts.aKeySource : null;
+  const bSrc = aSrc ? opts.bKeySource : null;
+  const plain = !aSrc && opts.ignoreWhitespace !== 'trim' && opts.ignoreWhitespace !== 'all' && !opts.ignoreCase;
+  const aKeys = aSrc ? oldLines.map((l, i) => normKey(commentKeySource(l, aSrc[i]), opts))
+    : (plain ? oldLines : oldLines.map(l => normKey(l, opts)));
+  const bKeys = bSrc ? newLines.map((l, i) => normKey(commentKeySource(l, bSrc[i]), opts))
+    : (plain ? newLines : newLines.map(l => normKey(l, opts)));
+  // Ignorable = stripping emptied a non-blank line (a pure comment line).
+  // Raw blank lines are never ignorable, so blank-line edits stay changes.
+  const aDrop = aSrc ? oldLines.map((l, i) => aSrc[i] !== l && commentKeySource(l, aSrc[i]) === '') : null;
+  const bDrop = bSrc ? newLines.map((l, i) => bSrc[i] !== l && commentKeySource(l, bSrc[i]) === '') : null;
 
   // Trim common prefix/suffix so Myers only sees the changed middle.
   let pre = 0;
@@ -133,11 +156,137 @@ function computeDiff(aText, bText, opts) {
     ops.push({ type: 'equal', oldIdx: aKeys.length - s, newIdx: bKeys.length - s });
   }
 
-  const finalOps = opts.ignoreWhitespace === 'all'
-    ? mergeWhitespaceOnlyRuns(ops, aKeys, bKeys)
-    : ops;
+  // Under 'all', the joined-key comparison (on stripped keys when a key
+  // source is present) subsumes the comment-only sequence rule.
+  let finalOps = ops;
+  if (opts.ignoreWhitespace === 'all') finalOps = mergeWhitespaceOnlyRuns(ops, aKeys, bKeys);
+  else if (aSrc) finalOps = mergeCommentOnlyRuns(ops, aKeys, bKeys, aDrop, bDrop);
+  if (opts.detectMoves) detectMoves(finalOps, aKeys, bKeys);
 
   return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops: finalOps, truncated };
+}
+
+// Under ignore-comments, a change run whose non-ignorable lines match 1:1 in
+// order is comment-only churn. Sequence comparison (not concatenation) keeps
+// code rewrapping a real diff under 'none'/'trim'. Kept lines pair two-sided,
+// comment lines pair comment-with-comment, and surplus comment lines become
+// one-sided equal ops. All-or-nothing per run: a run mixing a real code edit
+// with comment churn stays fully visible.
+function mergeCommentOnlyRuns(ops, aKeys, bKeys, aDrop, bDrop) {
+  const out = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'equal') { out.push(ops[i]); i++; continue; }
+    let j = i;
+    while (j < ops.length && ops[j].type !== 'equal') j++;
+    const run = ops.slice(i, j);
+    const dels = run.filter(o => o.type === 'delete');
+    const ins = run.filter(o => o.type === 'insert');
+    const oldSeq = dels.filter(o => !aDrop[o.oldIdx]);
+    const newSeq = ins.filter(o => !bDrop[o.newIdx]);
+    let match = oldSeq.length === newSeq.length;
+    for (let k = 0; match && k < oldSeq.length; k++) {
+      if (aKeys[oldSeq[k].oldIdx] !== bKeys[newSeq[k].newIdx]) match = false;
+    }
+    if (match) {
+      let di = 0;
+      let ni = 0;
+      while (di < dels.length || ni < ins.length) {
+        const dIgn = di < dels.length && aDrop[dels[di].oldIdx];
+        const nIgn = ni < ins.length && bDrop[ins[ni].newIdx];
+        if (dIgn && nIgn) {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx, newIdx: ins[ni++].newIdx });
+        } else if (dIgn) {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx });
+        } else if (nIgn) {
+          out.push({ type: 'equal', newIdx: ins[ni++].newIdx });
+        } else {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx, newIdx: ins[ni++].newIdx });
+        }
+      }
+    } else {
+      for (const o of run) out.push(o);
+    }
+    i = j;
+  }
+  return out;
+}
+
+const MOVE_TRIVIAL_MIN = 3;
+
+// Trivial lines (blanks, braces, lone punctuation) can't anchor a move on
+// their own — they only join a block when adjacent lines match too.
+function moveTrivialKey(key) {
+  const t = key.replace(/\s+/g, '');
+  return t.length < MOVE_TRIVIAL_MIN || !/[A-Za-z0-9]/.test(t);
+}
+
+// Tag delete/insert pairs that are really relocations. A line anchors a move
+// when its key appears exactly once among deletes and once among inserts;
+// each anchor then grows up and down by consecutive line numbers on both
+// sides, sweeping adjacent matching lines (trivial ones included) into one
+// block. Ops keep their type — they gain moveId (shared per block) plus
+// moveTo (on deletes) / moveFrom (on inserts) pointing at the partner line.
+function detectMoves(ops, aKeys, bKeys) {
+  const delOps = [];
+  const insOps = [];
+  for (const op of ops) {
+    if (op.type === 'delete') delOps.push(op);
+    else if (op.type === 'insert') insOps.push(op);
+  }
+  if (delOps.length === 0 || insOps.length === 0) return;
+
+  const delByKey = new Map();
+  const insByKey = new Map();
+  const delByOld = new Map();
+  const insByNew = new Map();
+  for (const op of delOps) {
+    const k = aKeys[op.oldIdx];
+    if (!delByKey.has(k)) delByKey.set(k, []);
+    delByKey.get(k).push(op);
+    delByOld.set(op.oldIdx, op);
+  }
+  for (const op of insOps) {
+    const k = bKeys[op.newIdx];
+    if (!insByKey.has(k)) insByKey.set(k, []);
+    insByKey.get(k).push(op);
+    insByNew.set(op.newIdx, op);
+  }
+
+  const anchors = [];
+  for (const [key, dels] of delByKey) {
+    if (dels.length !== 1) continue;
+    const ins = insByKey.get(key);
+    if (!ins || ins.length !== 1) continue;
+    if (moveTrivialKey(key)) continue;
+    anchors.push([dels[0], ins[0]]);
+  }
+  anchors.sort((p, q) => p[0].oldIdx - q[0].oldIdx);
+
+  let nextMoveId = 0;
+  const pairMove = (d, ins, id) => {
+    d.moveId = id; d.moveTo = ins.newIdx;
+    ins.moveId = id; ins.moveFrom = d.oldIdx;
+  };
+  for (const [d0, i0] of anchors) {
+    if (d0.moveId != null || i0.moveId != null) continue;
+    const id = nextMoveId++;
+    pairMove(d0, i0, id);
+    for (let o = d0.oldIdx - 1, n = i0.newIdx - 1; ; o--, n--) {
+      const d = delByOld.get(o);
+      const ins = insByNew.get(n);
+      if (!d || !ins || d.moveId != null || ins.moveId != null) break;
+      if (aKeys[o] !== bKeys[n]) break;
+      pairMove(d, ins, id);
+    }
+    for (let o = d0.oldIdx + 1, n = i0.newIdx + 1; ; o++, n++) {
+      const d = delByOld.get(o);
+      const ins = insByNew.get(n);
+      if (!d || !ins || d.moveId != null || ins.moveId != null) break;
+      if (aKeys[o] !== bKeys[n]) break;
+      pairMove(d, ins, id);
+    }
+  }
 }
 
 // Under ignoreWhitespace 'all', a newline is whitespace too: a change run that
@@ -227,5 +376,5 @@ function esc(s) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { splitLines, normKey, myersDiff, computeDiff, inlineDiffRanges, esc, DIFF_MAX_D };
+  module.exports = { splitLines, normKey, myersDiff, computeDiff, inlineDiffRanges, esc, DIFF_MAX_D, detectMoves, moveTrivialKey, commentKeySource, mergeCommentOnlyRuns };
 }

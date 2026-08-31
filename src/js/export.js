@@ -114,6 +114,7 @@ function exportHtmlReport() {
     '<p class="report-meta">Generated ' + esc(now.toLocaleString()) +
     ' &middot; <span class="stat-added">+' + stats.added + '</span>' +
     ' <span class="stat-removed">-' + stats.removed + '</span>' +
+    (stats.moved ? ' <span class="stat-moved">&#8645;' + stats.moved + '</span>' : '') +
     ' &middot; ' + stats.unchanged + ' unchanged</p></div>' +
     '<div class="report-diff">' + body + '</div>' +
     '</body></html>';
@@ -137,6 +138,8 @@ async function exportShareLink() {
       ignoreWhitespace: settings.ignoreWhitespace,
       ignoreCase: settings.ignoreCase,
       language: settings.language,
+      detectMoves: settings.detectMoves,
+      ignoreComments: settings.ignoreComments,
     },
   };
   let hash;

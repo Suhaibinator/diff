@@ -18,13 +18,23 @@ function groupOps(ops) {
 }
 
 function diffStatCounts(ops) {
-  let added = 0, removed = 0, unchanged = 0;
+  let added = 0, removed = 0, unchanged = 0, moved = 0;
   for (const op of ops) {
-    if (op.type === 'insert') added++;
-    else if (op.type === 'delete') removed++;
+    // Moved pairs count once (on the insert side) and never as added/removed.
+    if (op.type === 'insert') { if (op.moveId != null) moved++; else added++; }
+    else if (op.type === 'delete') { if (op.moveId == null) removed++; }
     else unchanged++;
   }
-  return { added, removed, unchanged };
+  return { added, removed, unchanged, moved };
+}
+
+function moveRowAttrs(op) {
+  if (op.moveId == null) return '';
+  const out = op.type === 'delete';
+  return ' data-move-id="' + op.moveId + '"' +
+    ' data-move-row="' + (out ? 'o' + op.oldIdx : 'n' + op.newIdx) + '"' +
+    ' data-move-partner="' + (out ? 'n' + op.moveTo : 'o' + op.moveFrom) + '"' +
+    ' title="' + (out ? 'Moved to line ' + (op.moveTo + 1) : 'Moved from line ' + (op.moveFrom + 1)) + '"';
 }
 
 // Compose a line's cell HTML from raw text, optional pre-highlighted HTML,
@@ -43,6 +53,23 @@ function renderLineContent(text, hlHtml, ranges, cls) {
   }
   if (pos < text.length) html += esc(text.slice(pos));
   return html;
+}
+
+// Pair non-moved deletes with non-moved inserts positionally for inline
+// char/word highlights. Returns op -> ranges (oldRanges for deletes,
+// newRanges for inserts); moved ops get no entry.
+function buildPairRanges(deletes, inserts, oldLines, newLines, granularity) {
+  const pairDeletes = deletes.filter(o => o.moveId == null);
+  const pairInserts = inserts.filter(o => o.moveId == null);
+  const pairCount = Math.min(pairDeletes.length, pairInserts.length);
+  const rangesByOp = new Map();
+  for (let i = 0; i < pairCount; i++) {
+    const r = inlineDiffRanges(
+      oldLines[pairDeletes[i].oldIdx], newLines[pairInserts[i].newIdx], granularity);
+    rangesByOp.set(pairDeletes[i], r.oldRanges);
+    rangesByOp.set(pairInserts[i], r.newRanges);
+  }
+  return rangesByOp;
 }
 
 function collapsePlan(groupLen, isFirst, isLast, contextLines) {
@@ -95,12 +122,9 @@ function buildUnifiedHtml(diff, opts) {
     } else {
       const deletes = group.ops.filter(o => o.type === 'delete');
       const inserts = group.ops.filter(o => o.type === 'insert');
-      const pairCount = Math.min(deletes.length, inserts.length);
-      const pairRanges = [];
-      for (let i = 0; i < pairCount; i++) {
-        pairRanges.push(inlineDiffRanges(
-          oldLines[deletes[i].oldIdx], newLines[inserts[i].newIdx], opts.granularity));
-      }
+      // Moved lines are excluded from positional inline pairing — a moved
+      // line's real partner is elsewhere, not the line across from it.
+      const rangesByOp = buildPairRanges(deletes, inserts, oldLines, newLines, opts.granularity);
       const gAttr = ' data-change-group="' + changeGroupIdx + '"';
       let first = true;
 
@@ -108,11 +132,13 @@ function buildUnifiedHtml(diff, opts) {
         const op = deletes[i];
         const text = oldLines[op.oldIdx];
         const hl = opts.hlOld ? opts.hlOld[op.oldIdx] : null;
-        const ranges = i < pairCount ? pairRanges[i].oldRanges : [];
-        html += '<tr class="diff-row-removed"' + gAttr + (first ? ' data-change-first' : '') + '>' +
+        const ranges = rangesByOp.get(op) || [];
+        const isMove = op.moveId != null;
+        html += '<tr class="' + (isMove ? 'diff-row-moved-out' : 'diff-row-removed') + '"' +
+          gAttr + moveRowAttrs(op) + (first ? ' data-change-first' : '') + '>' +
           '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
           '<td class="line-num"></td>' +
-          '<td class="line-type">-</td>' +
+          '<td class="line-type">' + (isMove ? '&#8645;' : '-') + '</td>' +
           '<td class="line-content">' + renderLineContent(text, hl, ranges, 'char-highlight-remove') + '</td></tr>';
         first = false;
       }
@@ -121,11 +147,13 @@ function buildUnifiedHtml(diff, opts) {
         const op = inserts[i];
         const text = newLines[op.newIdx];
         const hl = opts.hlNew ? opts.hlNew[op.newIdx] : null;
-        const ranges = i < pairCount ? pairRanges[i].newRanges : [];
-        html += '<tr class="diff-row-added"' + gAttr + (first ? ' data-change-first' : '') + '>' +
+        const ranges = rangesByOp.get(op) || [];
+        const isMove = op.moveId != null;
+        html += '<tr class="' + (isMove ? 'diff-row-moved-in' : 'diff-row-added') + '"' +
+          gAttr + moveRowAttrs(op) + (first ? ' data-change-first' : '') + '>' +
           '<td class="line-num"></td>' +
           '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
-          '<td class="line-type">+</td>' +
+          '<td class="line-type">' + (isMove ? '&#8645;' : '+') + '</td>' +
           '<td class="line-content">' + renderLineContent(text, hl, ranges, 'char-highlight-add') + '</td></tr>';
         first = false;
       }
@@ -188,21 +216,18 @@ function buildSplitHtml(diff, opts) {
       const deletes = group.ops.filter(o => o.type === 'delete');
       const inserts = group.ops.filter(o => o.type === 'insert');
       const maxLen = Math.max(deletes.length, inserts.length);
-      const pairCount = Math.min(deletes.length, inserts.length);
-      const pairRanges = [];
-      for (let i = 0; i < pairCount; i++) {
-        pairRanges.push(inlineDiffRanges(
-          oldLines[deletes[i].oldIdx], newLines[inserts[i].newIdx], opts.granularity));
-      }
+      const rangesByOp = buildPairRanges(deletes, inserts, oldLines, newLines, opts.granularity);
       const gAttr = ' data-change-group="' + changeGroupIdx + '"';
 
       for (let i = 0; i < maxLen; i++) {
         const isFirst = i === 0;
         if (i < deletes.length) {
           const op = deletes[i];
-          const ranges = i < pairCount ? pairRanges[i].oldRanges : [];
+          const ranges = rangesByOp.get(op) || [];
           const hl = opts.hlOld ? opts.hlOld[op.oldIdx] : null;
-          leftHtml += '<tr class="diff-row-removed"' + gAttr + (isFirst ? ' data-change-first' : '') +
+          const cls = op.moveId != null ? 'diff-row-moved-out' : 'diff-row-removed';
+          leftHtml += '<tr class="' + cls + '"' + gAttr + moveRowAttrs(op) +
+            (isFirst ? ' data-change-first' : '') +
             '><td class="line-num">' + (op.oldIdx + 1) + '</td><td class="line-content">' +
             renderLineContent(oldLines[op.oldIdx], hl, ranges, 'char-highlight-remove') + '</td></tr>';
         } else {
@@ -211,9 +236,11 @@ function buildSplitHtml(diff, opts) {
 
         if (i < inserts.length) {
           const op = inserts[i];
-          const ranges = i < pairCount ? pairRanges[i].newRanges : [];
+          const ranges = rangesByOp.get(op) || [];
           const hl = opts.hlNew ? opts.hlNew[op.newIdx] : null;
-          rightHtml += '<tr class="diff-row-added"' + gAttr + '><td class="line-num">' + (op.newIdx + 1) +
+          const cls = op.moveId != null ? 'diff-row-moved-in' : 'diff-row-added';
+          rightHtml += '<tr class="' + cls + '"' + gAttr + moveRowAttrs(op) +
+            '><td class="line-num">' + (op.newIdx + 1) +
             '</td><td class="line-content">' +
             renderLineContent(newLines[op.newIdx], hl, ranges, 'char-highlight-add') + '</td></tr>';
         } else {

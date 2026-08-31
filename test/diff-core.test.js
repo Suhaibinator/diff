@@ -114,6 +114,191 @@ test('ignore-all-whitespace still reports real changes next to rewrapping', () =
   assert.ok(d.ops.some(o => o.type !== 'equal'));
 });
 
+test('detectMoves tags a uniquely moved line on both sides', () => {
+  const oldT = 'import b\nimport a\nimport c\n';
+  const newT = 'import a\nimport c\nimport b\n';
+  const d = computeDiff(oldT, newT, { detectMoves: true });
+  const del = d.ops.find(o => o.type === 'delete');
+  const ins = d.ops.find(o => o.type === 'insert');
+  assert.equal(d.oldLines[del.oldIdx], 'import b');
+  assert.equal(del.moveId, ins.moveId);
+  assert.notEqual(del.moveId, undefined);
+  assert.equal(del.moveTo, ins.newIdx);
+  assert.equal(ins.moveFrom, del.oldIdx);
+  // Types unchanged, so text reconstruction still works.
+  assert.deepEqual(applyOps(d), ['import a', 'import c', 'import b']);
+});
+
+test('detectMoves assigns distinct sequential moveIds in old-file order', () => {
+  const oldT = 'alpha\nkeep1\nbeta\nkeep2\n';
+  const newT = 'keep1\nbeta\nkeep2\nalpha\n';
+  const d = computeDiff(oldT, newT, { detectMoves: true });
+  // 'alpha' moves down; 'beta' stays equal. Add a second real move:
+  const oldT2 = 'alpha\nkeep1\nbeta\nkeep2\nkeep3\n';
+  const newT2 = 'keep1\nkeep2\nbeta\nkeep3\nalpha\n';
+  const d2 = computeDiff(oldT2, newT2, { detectMoves: true });
+  const dels = d2.ops.filter(o => o.type === 'delete' && o.moveId != null);
+  assert.equal(dels.length, 2);
+  assert.equal(dels[0].moveId, 0); // 'alpha' (oldIdx 0) anchors first
+  assert.equal(dels[1].moveId, 1); // 'beta'
+  assert.equal(d2.oldLines[dels[0].oldIdx], 'alpha');
+  assert.equal(d2.oldLines[dels[1].oldIdx], 'beta');
+  assert.ok(d.ops.some(o => o.moveId != null));
+});
+
+test('detectMoves grows a moved function block including trivial lines', () => {
+  // The stationary middle is larger than the function so Myers relocates the
+  // function (4 lines of churn) rather than the middle (5 lines).
+  const fn = ['function helper() {', '  work();', '', '}'];
+  const mid = ['m1();', 'm2();', 'm3();', 'm4();', 'm5();'];
+  const oldT = [...fn, ...mid, 'end'].join('\n') + '\n';
+  const newT = [...mid, ...fn, 'end'].join('\n') + '\n';
+  const d = computeDiff(oldT, newT, { detectMoves: true });
+  const dels = d.ops.filter(o => o.type === 'delete');
+  const ins = d.ops.filter(o => o.type === 'insert');
+  assert.equal(dels.length, 4);
+  assert.equal(ins.length, 4);
+  const ids = new Set([...dels, ...ins].map(o => o.moveId));
+  assert.deepEqual([...ids], [0]); // whole block, one moveId, incl. '' and '}'
+  for (const o of dels) assert.equal(d.newLines[o.moveTo], d.oldLines[o.oldIdx]);
+});
+
+test('detectMoves ignores duplicates and lone trivial lines', () => {
+  // 'dup' deleted twice and inserted twice — ambiguous, never anchors.
+  // (maxD: 0 forces the block-replacement fallback so both copies churn;
+  // no shared prefix/suffix so nothing gets trimmed to equal first.)
+  const dup = computeDiff('dup\na\ndup\nb\n', 'c\ndup\nd\ndup\ne\n', { detectMoves: true, maxD: 0 });
+  assert.ok(dup.ops.every(o => o.moveId == null));
+  // A lone unique '}' relocation is trivial — untagged.
+  const triv = computeDiff('}\na\nb\n', 'a\nb\n}\n', { detectMoves: true });
+  assert.ok(triv.ops.every(o => o.moveId == null));
+});
+
+test('detectMoves off leaves ops untagged', () => {
+  const d = computeDiff('b\na\n', 'a\nb\n', {});
+  assert.ok(d.ops.every(o => !('moveId' in o)));
+});
+
+test('detectMoves works with normalization and one-sided equals', () => {
+  // Moved copy re-indented: matches under 'trim'.
+  const d = computeDiff('  doWork();\nkeep\n', 'keep\ndoWork();\n',
+    { detectMoves: true, ignoreWhitespace: 'trim' });
+  assert.ok(d.ops.some(o => o.moveId != null));
+  // ignoreWhitespace 'all' with a line join (one-sided equals) plus a move.
+  const oldT = 'if (x) {\n  a();\n}\nelse {\n  b();\n}\nmoveMe();\nkeep\n';
+  const newT = 'moveMe();\nif (x) {\n  a();\n} else {\n  b();\n}\nkeep\n';
+  const d2 = computeDiff(oldT, newT, { detectMoves: true, ignoreWhitespace: 'all' });
+  const moved = d2.ops.filter(o => o.moveId != null);
+  assert.equal(moved.length, 2);
+  assert.equal(d2.oldLines[moved.find(o => o.type === 'delete').oldIdx], 'moveMe();');
+  // One-sided equal ops untouched.
+  assert.ok(d2.ops.filter(o => o.type === 'equal').every(o => o.moveId == null));
+});
+
+test('detectMoves still fires on the truncated block-replacement fallback', () => {
+  const oldT = 'unique line one\nunique line two\nunique line three\n';
+  const newT = 'unique line three\nunique line one\nunique line two\n';
+  const d = computeDiff(oldT, newT, { detectMoves: true, maxD: 0 });
+  assert.equal(d.truncated, true);
+  assert.ok(d.ops.some(o => o.moveId != null));
+  // Tagging never changes op types or counts.
+  assert.deepEqual(opCounts(d.ops), { equal: 0, insert: 3, delete: 3 });
+});
+
+const { commentKeySource } = require('../src/js/diff-core.js');
+
+test('commentKeySource only touches lines stripping changed', () => {
+  assert.equal(commentKeySource('  x = 1', '  x = 1'), '  x = 1'); // untouched: exact
+  assert.equal(commentKeySource('  // note', '  '), '');           // pure comment line
+  assert.equal(commentKeySource('x = 1 // c', 'x = 1 '), 'x = 1'); // trailing comment
+  assert.equal(commentKeySource('   ', '   '), '   ');             // raw blank untouched
+});
+
+// Helper: fabricate keySource arrays the way stripComments would.
+function stripFixture(lines, stripFn) {
+  return lines.map(stripFn);
+}
+
+test('keySource: comment-only edits read as unchanged', () => {
+  // old: code with trailing comment + a comment line; new: edited comment,
+  // comment block resplit 2 -> 3 lines.
+  const oldLines = ['a();', 'b(); // old note', '// one', '// two', 'c();'];
+  const newLines = ['a();', 'b(); // new note', '// one liner', '// split', '// up', 'c();'];
+  const strip = l => l.replace(/\/\/.*$/, '');
+  const d = computeDiff(oldLines.join('\n') + '\n', newLines.join('\n') + '\n', {
+    aKeySource: stripFixture(oldLines, strip),
+    bKeySource: stripFixture(newLines, strip),
+  });
+  assert.ok(d.ops.every(o => o.type === 'equal'));
+  // Resplit leaves one surplus new comment line as a one-sided equal.
+  assert.equal(d.ops.filter(o => o.oldIdx == null).length, 1);
+});
+
+test('keySource: comment lines added/removed at run edges merge', () => {
+  const oldLines = ['x();'];
+  const newLines = ['// header', 'x();', '// footer'];
+  const strip = l => l.replace(/\/\/.*$/, '');
+  const d = computeDiff(oldLines.join('\n') + '\n', newLines.join('\n') + '\n', {
+    aKeySource: stripFixture(oldLines, strip),
+    bKeySource: stripFixture(newLines, strip),
+  });
+  assert.ok(d.ops.every(o => o.type === 'equal'));
+});
+
+test('keySource: blank-line inserts and code rewraps stay real changes', () => {
+  const strip = l => l.replace(/\/\/.*$/, '');
+  // Inserted blank line: raw blank is never ignorable.
+  const d1 = computeDiff('a();\nb();\n', 'a();\n\nb();\n', {
+    aKeySource: ['a();', 'b();'], bKeySource: ['a();', '', 'b();'],
+  });
+  assert.ok(d1.ops.some(o => o.type !== 'equal'));
+  // Code rewrap under default whitespace: sequences differ, not merged.
+  const oldL = ['foo();', 'bar();'];
+  const newL = ['foo(); bar();'];
+  const d2 = computeDiff(oldL.join('\n') + '\n', newL.join('\n') + '\n', {
+    aKeySource: stripFixture(oldL, strip), bKeySource: stripFixture(newL, strip),
+  });
+  assert.ok(d2.ops.some(o => o.type !== 'equal'));
+});
+
+test('keySource: a real code edit among comment churn stays visible', () => {
+  const oldLines = ['// intro', 'value = 1;'];
+  const newLines = ['// rewritten intro', 'value = 2;'];
+  const strip = l => l.replace(/\/\/.*$/, '');
+  const d = computeDiff(oldLines.join('\n') + '\n', newLines.join('\n') + '\n', {
+    aKeySource: stripFixture(oldLines, strip),
+    bKeySource: stripFixture(newLines, strip),
+  });
+  // The comment pair keys as equal; the code edit stays a real change.
+  assert.deepEqual(opCounts(d.ops), { equal: 1, insert: 1, delete: 1 });
+  assert.equal(d.oldLines[d.ops.find(o => o.type === 'delete').oldIdx], 'value = 1;');
+});
+
+test('keySource: composes with ignoreWhitespace all and detectMoves', () => {
+  const strip = l => l.replace(/\/\/.*$/, '');
+  // 'all': comment churn plus a line join both collapse.
+  const oldL = ['x();', '// gone', 'if (a) {', 'doIt();', '}'];
+  const newL = ['x();', 'if (a) { doIt();', '}'];
+  const d = computeDiff(oldL.join('\n') + '\n', newL.join('\n') + '\n', {
+    ignoreWhitespace: 'all',
+    aKeySource: stripFixture(oldL, strip), bKeySource: stripFixture(newL, strip),
+  });
+  assert.ok(d.ops.every(o => o.type === 'equal'));
+  // Moves match on stripped keys: relocated line with a changed comment.
+  const oldM = ['doWork(); // a', 'keep1();', 'keep2();'];
+  const newM = ['keep1();', 'keep2();', 'doWork(); // b'];
+  const d2 = computeDiff(oldM.join('\n') + '\n', newM.join('\n') + '\n', {
+    detectMoves: true,
+    aKeySource: stripFixture(oldM, strip), bKeySource: stripFixture(newM, strip),
+  });
+  assert.ok(d2.ops.some(o => o.moveId != null));
+});
+
+test('keySource: length mismatch is ignored defensively', () => {
+  const d = computeDiff('a\nb\n', 'a\nb\n', { aKeySource: ['x'], bKeySource: ['x', 'y'] });
+  assert.deepEqual(opCounts(d.ops), { equal: 2, insert: 0, delete: 0 });
+});
+
 test('maxD cap falls back to block replacement and flags truncated', () => {
   const a = Array.from({ length: 50 }, (_, i) => 'a' + i).join('\n');
   const b = Array.from({ length: 50 }, (_, i) => 'b' + i).join('\n');

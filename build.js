@@ -17,6 +17,7 @@ const JS_ORDER = [
   'patch.js',
   'share.js',
   'highlight.js',
+  'comments.js',
   'json-mode.js',
   'render.js',
   'files.js',
