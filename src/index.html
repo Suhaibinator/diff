@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diff Checker</title>
+<!-- BUILD:CSS -->
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 4h12M2 8h8M2 12h10" stroke="white" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <span>Diff Checker</span>
+    </div>
+    <div class="controls">
+      <div class="view-toggle" id="modeToggle">
+        <button class="active" data-mode="text">Text</button>
+        <button data-mode="json">JSON</button>
+        <button data-mode="patch">Patch</button>
+      </div>
+      <div class="view-toggle" id="viewToggle">
+        <button class="active" data-view="unified">Unified</button>
+        <button data-view="split">Split</button>
+      </div>
+      <button class="btn btn-icon" id="settingsBtn" title="Diff options">&#9881;</button>
+      <button class="btn" id="swapBtn" title="Swap left and right">&#8644; Swap</button>
+      <button class="btn" id="clearBtn">Clear</button>
+      <button class="btn btn-primary" id="diffBtn">Compare</button>
+    </div>
+
+    <div class="settings-popover" id="settingsPopover" hidden>
+      <div class="popover-row">
+        <span class="popover-label">Granularity</span>
+        <div class="seg-control">
+          <button data-gran="line">Line</button><button data-gran="word">Word</button><button data-gran="char">Char</button>
+        </div>
+      </div>
+      <div class="popover-row">
+        <label class="popover-label" for="optWhitespace">Whitespace</label>
+        <select id="optWhitespace" class="popover-select">
+          <option value="none">Compare exactly</option>
+          <option value="trim">Ignore leading/trailing</option>
+          <option value="all">Ignore all whitespace</option>
+        </select>
+      </div>
+      <div class="popover-row" id="langRow">
+        <label class="popover-label" for="langSelect">Language</label>
+        <select id="langSelect" class="popover-select"></select>
+      </div>
+      <label class="popover-check"><input type="checkbox" id="optIgnoreCase"> Ignore case</label>
+      <label class="popover-check"><input type="checkbox" id="optAutoCompare"> Live compare (as you type)</label>
+      <label class="popover-check"><input type="checkbox" id="optCollapse"> Collapse unchanged lines</label>
+      <div class="popover-row popover-sub">
+        <label class="popover-label" for="optContext">Context lines</label>
+        <input type="number" id="optContext" class="popover-num" min="1" max="10" value="3">
+      </div>
+      <label class="popover-check"><input type="checkbox" id="optSyncScroll"> Sync input scrolling</label>
+    </div>
+  </header>
+
+  <div class="main-content" id="mainContent">
+    <div id="noticeArea"></div>
+    <div class="input-area" id="inputArea">
+      <div class="input-pane" data-side="left">
+        <div class="pane-header" data-side="left">
+          <div class="pane-title">
+            <span class="pane-label" id="leftPaneLabel">Original</span>
+            <span class="pane-file" id="leftFile" hidden><span class="pane-file-name"></span><button class="file-clear" data-side="left" title="Detach filename">&times;</button></span>
+          </div>
+          <div class="pane-actions">
+            <button class="btn btn-sm pane-open" data-side="left" title="Open a file">Open&hellip;</button>
+            <span class="char-count" id="leftCount">0 chars</span>
+          </div>
+        </div>
+        <textarea id="leftInput" placeholder="Paste original text here..." spellcheck="false"></textarea>
+        <input type="file" id="leftFileInput" hidden>
+      </div>
+      <div class="input-pane" data-side="right" id="rightPane">
+        <div class="pane-header" data-side="right">
+          <div class="pane-title">
+            <span class="pane-label" id="rightPaneLabel">Modified</span>
+            <span class="pane-file" id="rightFile" hidden><span class="pane-file-name"></span><button class="file-clear" data-side="right" title="Detach filename">&times;</button></span>
+          </div>
+          <div class="pane-actions">
+            <button class="btn btn-sm pane-open" data-side="right" title="Open a file">Open&hellip;</button>
+            <span class="char-count" id="rightCount">0 chars</span>
+          </div>
+        </div>
+        <textarea id="rightInput" placeholder="Paste modified text here..." spellcheck="false"></textarea>
+        <input type="file" id="rightFileInput" hidden>
+      </div>
+    </div>
+
+    <div class="resize-handle" id="resizeHandle" style="display:none;"></div>
+
+    <div class="diff-area" id="diffArea">
+      <div class="diff-toolbar">
+        <div class="toolbar-left">
+          <div class="diff-stats" id="diffStats"></div>
+          <button class="lang-chip" id="langChip" hidden title="Detected language — click to change"></button>
+        </div>
+        <div class="toolbar-right">
+          <div class="export-wrap">
+            <button class="btn" id="exportBtn">Export &#9662;</button>
+            <div class="export-dropdown" id="exportDropdown" hidden>
+              <button data-export="copy-patch">Copy as patch</button>
+              <button data-export="download-patch">Download .patch</button>
+              <button data-export="report">Download HTML report</button>
+              <button data-export="share">Copy share link</button>
+            </div>
+          </div>
+          <div class="diff-nav">
+            <button class="btn" id="prevDiffBtn" title="Previous change (Alt+&#8593;)">&#9650; Prev</button>
+            <span class="diff-nav-label" id="diffNavLabel"></span>
+            <button class="btn" id="nextDiffBtn" title="Next change (Alt+&#8595;)">&#9660; Next</button>
+          </div>
+        </div>
+      </div>
+      <div class="diff-scroll-wrapper">
+        <div class="diff-scroll" id="diffScroll"></div>
+        <div class="diff-minimap" id="diffMinimap">
+          <div class="minimap-viewport" id="minimapViewport"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toastArea"></div>
+
+<!-- BUILD:VENDOR -->
+<!-- BUILD:JS -->
+</body>
+</html>

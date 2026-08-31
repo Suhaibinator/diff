@@ -1,0 +1,31 @@
+/* ── Styles used only by the exported standalone HTML report ── */
+body {
+  padding: 24px;
+  height: auto;
+}
+
+.report-header {
+  max-width: 1200px;
+  margin: 0 auto 20px;
+}
+
+.report-header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  margin-bottom: 6px;
+}
+
+.report-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.report-diff {
+  max-width: 1200px;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  background: var(--surface);
+}
