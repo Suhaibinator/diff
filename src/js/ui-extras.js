@@ -1,5 +1,11 @@
 // ── Minimap, change navigation, resize handle, input scroll sync ──
 
+function flashRow(el) {
+  el.style.outline = '2px solid var(--accent)';
+  el.style.outlineOffset = '-2px';
+  setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 800);
+}
+
 function jumpDiff(dir) {
   if (session.changeGroups.length === 0) return;
   session.currentChangeIdx += dir;
@@ -8,9 +14,7 @@ function jumpDiff(dir) {
   updateNavLabel();
   const el = session.changeGroups[session.currentChangeIdx];
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  el.style.outline = '2px solid var(--accent)';
-  el.style.outlineOffset = '-2px';
-  setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 800);
+  flashRow(el);
 }
 
 function updateNavLabel() {
@@ -35,13 +39,15 @@ function updateMinimap() {
   if (totalHeight === 0) return;
   const mapHeight = diffMinimap.clientHeight;
 
-  const rows = diffScroll.querySelectorAll('.diff-row-added, .diff-row-removed');
+  const rows = diffScroll.querySelectorAll(
+    '.diff-row-added, .diff-row-removed, .diff-row-moved-in, .diff-row-moved-out');
   rows.forEach(row => {
     const height = row.offsetHeight;
     if (height === 0) return; // collapsed rows
     const top = row.offsetTop;
     const marker = document.createElement('div');
-    marker.className = 'minimap-marker ' + (row.classList.contains('diff-row-added') ? 'added' : 'removed');
+    marker.className = 'minimap-marker ' + (row.classList.contains('diff-row-added') ? 'added'
+      : row.classList.contains('diff-row-removed') ? 'removed' : 'moved');
     marker.style.top = ((top / totalHeight) * mapHeight) + 'px';
     marker.style.height = Math.max(2, (height / totalHeight) * mapHeight) + 'px';
     diffMinimap.appendChild(marker);

@@ -32,6 +32,9 @@
     --highlight-add: rgba(63, 185, 80, 0.25);
     --highlight-remove: rgba(248, 81, 73, 0.25);
     --unchanged-gutter: #1c1f2e;
+    --moved-bg: #10222f;
+    --moved-text: #58b7e6;
+    --moved-gutter: #16344a;
   }
 
   html, body {
@@ -263,6 +266,7 @@
 
   .stat-added { color: var(--added-text); }
   .stat-removed { color: var(--removed-text); }
+  .stat-moved { color: var(--moved-text); }
   .stat-unchanged { color: var(--text-muted); }
 
   .diff-scroll {
@@ -325,6 +329,25 @@
 
   .diff-row-unchanged .line-num { background: var(--unchanged-gutter); }
   .diff-row-unchanged .line-type { background: var(--unchanged-gutter); }
+
+  .diff-row-moved-out,
+  .diff-row-moved-in {
+    background: var(--moved-bg);
+    cursor: pointer;
+  }
+
+  .diff-row-moved-out .line-num, .diff-row-moved-in .line-num { background: var(--moved-gutter); }
+  .diff-row-moved-out .line-type, .diff-row-moved-in .line-type { color: var(--moved-text); background: var(--moved-gutter); }
+  .diff-row-moved-out .line-content, .diff-row-moved-in .line-content { color: var(--moved-text); }
+
+  /* Split view has no line-type cell — badge the line-num gutter instead. */
+  .diff-side .diff-row-moved-out .line-num::after,
+  .diff-side .diff-row-moved-in .line-num::after {
+    content: '\21C5';
+    margin-left: 4px;
+    color: var(--moved-text);
+    opacity: 0.7;
+  }
 
   .diff-row-separator td {
     background: var(--surface-2);
@@ -442,6 +465,7 @@
 
   .minimap-marker.added { background: var(--added-text); opacity: 0.7; }
   .minimap-marker.removed { background: var(--removed-text); opacity: 0.7; }
+  .minimap-marker.moved { background: var(--moved-text); opacity: 0.7; }
 
   .minimap-viewport {
     position: absolute;
@@ -933,6 +957,8 @@ header { position: relative; flex-wrap: wrap; }
         <select id="langSelect" class="popover-select"></select>
       </div>
       <label class="popover-check"><input type="checkbox" id="optIgnoreCase"> Ignore case</label>
+      <label class="popover-check"><input type="checkbox" id="optDetectMoves"> Detect moved lines</label>
+      <label class="popover-check"><input type="checkbox" id="optIgnoreComments"> Ignore comments</label>
       <label class="popover-check"><input type="checkbox" id="optAutoCompare"> Live compare (as you type)</label>
       <label class="popover-check"><input type="checkbox" id="optCollapse"> Collapse unchanged lines</label>
       <div class="popover-row popover-sub">
@@ -2305,6 +2331,8 @@ const settings = {
   granularity: 'word',        // 'line' | 'word' | 'char'
   ignoreWhitespace: 'none',   // 'none' | 'trim' | 'all'
   ignoreCase: false,
+  detectMoves: true,          // tag relocated lines/blocks instead of +/-
+  ignoreComments: false,      // hide comment-only changes (needs a resolved language)
   collapseUnchanged: false,
   contextLines: 3,
   autoCompare: false,
@@ -2467,17 +2495,40 @@ function myersBacktrack(trace, a, b) {
   return ops;
 }
 
+// Key-source text for a line under ignore-comments. Untouched lines keep
+// their exact text (indentation stays significant); a line stripping emptied
+// becomes '', and a trailing removed comment doesn't leave phantom
+// whitespace behind.
+function commentKeySource(raw, src) {
+  if (src === raw) return raw;
+  if (/^\s*$/.test(src)) return '';
+  return src.replace(/\s+$/, '');
+}
+
 // Full line-level diff with normalization options.
-// opts: { ignoreWhitespace: 'none'|'trim'|'all', ignoreCase: bool, maxD?: number }
+// opts: { ignoreWhitespace: 'none'|'trim'|'all', ignoreCase: bool, maxD?: number,
+//         detectMoves?: bool, aKeySource?: string[], bKeySource?: string[] }
+// aKeySource/bKeySource: per-line comment-stripped text (from stripComments);
+// keys are built from them while the original lines are what's displayed.
 function computeDiff(aText, bText, opts) {
   opts = opts || {};
   const sa = splitLines(aText);
   const sb = splitLines(bText);
   const oldLines = sa.lines;
   const newLines = sb.lines;
-  const plain = opts.ignoreWhitespace !== 'trim' && opts.ignoreWhitespace !== 'all' && !opts.ignoreCase;
-  const aKeys = plain ? oldLines : oldLines.map(l => normKey(l, opts));
-  const bKeys = plain ? newLines : newLines.map(l => normKey(l, opts));
+  const aSrc = (opts.aKeySource && opts.aKeySource.length === oldLines.length &&
+                opts.bKeySource && opts.bKeySource.length === newLines.length)
+    ? opts.aKeySource : null;
+  const bSrc = aSrc ? opts.bKeySource : null;
+  const plain = !aSrc && opts.ignoreWhitespace !== 'trim' && opts.ignoreWhitespace !== 'all' && !opts.ignoreCase;
+  const aKeys = aSrc ? oldLines.map((l, i) => normKey(commentKeySource(l, aSrc[i]), opts))
+    : (plain ? oldLines : oldLines.map(l => normKey(l, opts)));
+  const bKeys = bSrc ? newLines.map((l, i) => normKey(commentKeySource(l, bSrc[i]), opts))
+    : (plain ? newLines : newLines.map(l => normKey(l, opts)));
+  // Ignorable = stripping emptied a non-blank line (a pure comment line).
+  // Raw blank lines are never ignorable, so blank-line edits stay changes.
+  const aDrop = aSrc ? oldLines.map((l, i) => aSrc[i] !== l && commentKeySource(l, aSrc[i]) === '') : null;
+  const bDrop = bSrc ? newLines.map((l, i) => bSrc[i] !== l && commentKeySource(l, bSrc[i]) === '') : null;
 
   // Trim common prefix/suffix so Myers only sees the changed middle.
   let pre = 0;
@@ -2508,11 +2559,137 @@ function computeDiff(aText, bText, opts) {
     ops.push({ type: 'equal', oldIdx: aKeys.length - s, newIdx: bKeys.length - s });
   }
 
-  const finalOps = opts.ignoreWhitespace === 'all'
-    ? mergeWhitespaceOnlyRuns(ops, aKeys, bKeys)
-    : ops;
+  // Under 'all', the joined-key comparison (on stripped keys when a key
+  // source is present) subsumes the comment-only sequence rule.
+  let finalOps = ops;
+  if (opts.ignoreWhitespace === 'all') finalOps = mergeWhitespaceOnlyRuns(ops, aKeys, bKeys);
+  else if (aSrc) finalOps = mergeCommentOnlyRuns(ops, aKeys, bKeys, aDrop, bDrop);
+  if (opts.detectMoves) detectMoves(finalOps, aKeys, bKeys);
 
   return { oldLines, newLines, oldEol: sa.eol, newEol: sb.eol, ops: finalOps, truncated };
+}
+
+// Under ignore-comments, a change run whose non-ignorable lines match 1:1 in
+// order is comment-only churn. Sequence comparison (not concatenation) keeps
+// code rewrapping a real diff under 'none'/'trim'. Kept lines pair two-sided,
+// comment lines pair comment-with-comment, and surplus comment lines become
+// one-sided equal ops. All-or-nothing per run: a run mixing a real code edit
+// with comment churn stays fully visible.
+function mergeCommentOnlyRuns(ops, aKeys, bKeys, aDrop, bDrop) {
+  const out = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].type === 'equal') { out.push(ops[i]); i++; continue; }
+    let j = i;
+    while (j < ops.length && ops[j].type !== 'equal') j++;
+    const run = ops.slice(i, j);
+    const dels = run.filter(o => o.type === 'delete');
+    const ins = run.filter(o => o.type === 'insert');
+    const oldSeq = dels.filter(o => !aDrop[o.oldIdx]);
+    const newSeq = ins.filter(o => !bDrop[o.newIdx]);
+    let match = oldSeq.length === newSeq.length;
+    for (let k = 0; match && k < oldSeq.length; k++) {
+      if (aKeys[oldSeq[k].oldIdx] !== bKeys[newSeq[k].newIdx]) match = false;
+    }
+    if (match) {
+      let di = 0;
+      let ni = 0;
+      while (di < dels.length || ni < ins.length) {
+        const dIgn = di < dels.length && aDrop[dels[di].oldIdx];
+        const nIgn = ni < ins.length && bDrop[ins[ni].newIdx];
+        if (dIgn && nIgn) {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx, newIdx: ins[ni++].newIdx });
+        } else if (dIgn) {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx });
+        } else if (nIgn) {
+          out.push({ type: 'equal', newIdx: ins[ni++].newIdx });
+        } else {
+          out.push({ type: 'equal', oldIdx: dels[di++].oldIdx, newIdx: ins[ni++].newIdx });
+        }
+      }
+    } else {
+      for (const o of run) out.push(o);
+    }
+    i = j;
+  }
+  return out;
+}
+
+const MOVE_TRIVIAL_MIN = 3;
+
+// Trivial lines (blanks, braces, lone punctuation) can't anchor a move on
+// their own — they only join a block when adjacent lines match too.
+function moveTrivialKey(key) {
+  const t = key.replace(/\s+/g, '');
+  return t.length < MOVE_TRIVIAL_MIN || !/[A-Za-z0-9]/.test(t);
+}
+
+// Tag delete/insert pairs that are really relocations. A line anchors a move
+// when its key appears exactly once among deletes and once among inserts;
+// each anchor then grows up and down by consecutive line numbers on both
+// sides, sweeping adjacent matching lines (trivial ones included) into one
+// block. Ops keep their type — they gain moveId (shared per block) plus
+// moveTo (on deletes) / moveFrom (on inserts) pointing at the partner line.
+function detectMoves(ops, aKeys, bKeys) {
+  const delOps = [];
+  const insOps = [];
+  for (const op of ops) {
+    if (op.type === 'delete') delOps.push(op);
+    else if (op.type === 'insert') insOps.push(op);
+  }
+  if (delOps.length === 0 || insOps.length === 0) return;
+
+  const delByKey = new Map();
+  const insByKey = new Map();
+  const delByOld = new Map();
+  const insByNew = new Map();
+  for (const op of delOps) {
+    const k = aKeys[op.oldIdx];
+    if (!delByKey.has(k)) delByKey.set(k, []);
+    delByKey.get(k).push(op);
+    delByOld.set(op.oldIdx, op);
+  }
+  for (const op of insOps) {
+    const k = bKeys[op.newIdx];
+    if (!insByKey.has(k)) insByKey.set(k, []);
+    insByKey.get(k).push(op);
+    insByNew.set(op.newIdx, op);
+  }
+
+  const anchors = [];
+  for (const [key, dels] of delByKey) {
+    if (dels.length !== 1) continue;
+    const ins = insByKey.get(key);
+    if (!ins || ins.length !== 1) continue;
+    if (moveTrivialKey(key)) continue;
+    anchors.push([dels[0], ins[0]]);
+  }
+  anchors.sort((p, q) => p[0].oldIdx - q[0].oldIdx);
+
+  let nextMoveId = 0;
+  const pairMove = (d, ins, id) => {
+    d.moveId = id; d.moveTo = ins.newIdx;
+    ins.moveId = id; ins.moveFrom = d.oldIdx;
+  };
+  for (const [d0, i0] of anchors) {
+    if (d0.moveId != null || i0.moveId != null) continue;
+    const id = nextMoveId++;
+    pairMove(d0, i0, id);
+    for (let o = d0.oldIdx - 1, n = i0.newIdx - 1; ; o--, n--) {
+      const d = delByOld.get(o);
+      const ins = insByNew.get(n);
+      if (!d || !ins || d.moveId != null || ins.moveId != null) break;
+      if (aKeys[o] !== bKeys[n]) break;
+      pairMove(d, ins, id);
+    }
+    for (let o = d0.oldIdx + 1, n = i0.newIdx + 1; ; o++, n++) {
+      const d = delByOld.get(o);
+      const ins = insByNew.get(n);
+      if (!d || !ins || d.moveId != null || ins.moveId != null) break;
+      if (aKeys[o] !== bKeys[n]) break;
+      pairMove(d, ins, id);
+    }
+  }
 }
 
 // Under ignoreWhitespace 'all', a newline is whitespace too: a change run that
@@ -2602,7 +2779,7 @@ function esc(s) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { splitLines, normKey, myersDiff, computeDiff, inlineDiffRanges, esc, DIFF_MAX_D };
+  module.exports = { splitLines, normKey, myersDiff, computeDiff, inlineDiffRanges, esc, DIFF_MAX_D, detectMoves, moveTrivialKey, commentKeySource, mergeCommentOnlyRuns };
 }
 
 // ──────────── src/js/patch.js ────────────
@@ -3067,6 +3244,89 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = { HL_EXT_MAP, detectLanguage, highlightToLines, overlayRanges, sliceRangesForNode, setHljsForTesting };
 }
 
+// ──────────── src/js/comments.js ────────────
+// ── Comment stripping for "ignore comment-only changes" ──
+// Reuses the vendored highlight.js tokenizer: whatever the highlighter marks
+// as a comment span is stripped, so strings containing comment markers are
+// never touched and every registered language works without its own table.
+
+let commentsHljsOverride = null;
+function setCommentsHljsForTesting(h) { commentsHljsOverride = h; }
+
+function commentsGetHljs() {
+  if (commentsHljsOverride) return commentsHljsOverride;
+  return (typeof getHljs === 'function') ? getHljs() : null;
+}
+
+// hljs escapes exactly these five entities in its HTML output.
+function unescapeHljsHtml(s) {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+}
+
+// Returns one string per line of `text` with all comment text removed, or
+// null when hljs or the language is unavailable. Line count mirrors
+// splitLines(text).lines (same trailing-eol handling) so callers can index
+// the result by oldIdx/newIdx.
+function stripComments(text, lang) {
+  const h = commentsGetHljs();
+  if (!h || !lang || lang === 'plaintext' || !h.getLanguage(lang)) return null;
+  if (text === '') return [];
+  let value;
+  try {
+    value = h.highlight(text, { language: lang, ignoreIllegals: true }).value;
+  } catch (e) {
+    return null;
+  }
+
+  const lines = [];
+  let current = '';
+  const stack = [];        // one entry per open span: true if inside a comment scope
+  let commentDepth = 0;    // > 0 → text belongs to a comment (incl. nested doctags)
+  let removedHere = false; // a comment was dropped since the last emitted char
+
+  // Collapse the whitespace a dropped mid-line comment leaves behind, so
+  // 'x = 1 /* c */ + 2' strips to 'x = 1 + 2', not 'x = 1  + 2'.
+  const emit = (chunk) => {
+    if (removedHere && /\s$/.test(current)) chunk = chunk.replace(/^\s+/, '');
+    if (chunk) removedHere = false;
+    current += chunk;
+  };
+
+  const re = /(<span[^>]*>)|(<\/span>)|\n/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(value)) !== null) {
+    const textPart = value.slice(last, m.index);
+    if (textPart) {
+      if (commentDepth > 0) removedHere = true;
+      else emit(unescapeHljsHtml(textPart));
+    }
+    if (m[1]) {
+      const isComment = commentDepth > 0 || /\bhljs-comment\b/.test(m[1]);
+      stack.push(isComment);
+      if (isComment) commentDepth++;
+    } else if (m[2]) {
+      if (stack.pop()) commentDepth--;
+    } else {
+      // A comment ending the line takes the whitespace before it along.
+      lines.push(removedHere ? current.replace(/\s+$/, '') : current);
+      current = '';
+      removedHere = false;
+    }
+    last = re.lastIndex;
+  }
+  const tail = value.slice(last);
+  if (tail && commentDepth === 0) emit(unescapeHljsHtml(tail));
+  lines.push(removedHere ? current.replace(/\s+$/, '') : current);
+  if (text.endsWith('\n')) lines.pop();
+  return lines;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { stripComments, setCommentsHljsForTesting };
+}
+
 // ──────────── src/js/json-mode.js ────────────
 // ── JSON mode: normalize (sort keys, pretty-print) then reuse the line diff ──
 
@@ -3130,13 +3390,23 @@ function groupOps(ops) {
 }
 
 function diffStatCounts(ops) {
-  let added = 0, removed = 0, unchanged = 0;
+  let added = 0, removed = 0, unchanged = 0, moved = 0;
   for (const op of ops) {
-    if (op.type === 'insert') added++;
-    else if (op.type === 'delete') removed++;
+    // Moved pairs count once (on the insert side) and never as added/removed.
+    if (op.type === 'insert') { if (op.moveId != null) moved++; else added++; }
+    else if (op.type === 'delete') { if (op.moveId == null) removed++; }
     else unchanged++;
   }
-  return { added, removed, unchanged };
+  return { added, removed, unchanged, moved };
+}
+
+function moveRowAttrs(op) {
+  if (op.moveId == null) return '';
+  const out = op.type === 'delete';
+  return ' data-move-id="' + op.moveId + '"' +
+    ' data-move-row="' + (out ? 'o' + op.oldIdx : 'n' + op.newIdx) + '"' +
+    ' data-move-partner="' + (out ? 'n' + op.moveTo : 'o' + op.moveFrom) + '"' +
+    ' title="' + (out ? 'Moved to line ' + (op.moveTo + 1) : 'Moved from line ' + (op.moveFrom + 1)) + '"';
 }
 
 // Compose a line's cell HTML from raw text, optional pre-highlighted HTML,
@@ -3155,6 +3425,23 @@ function renderLineContent(text, hlHtml, ranges, cls) {
   }
   if (pos < text.length) html += esc(text.slice(pos));
   return html;
+}
+
+// Pair non-moved deletes with non-moved inserts positionally for inline
+// char/word highlights. Returns op -> ranges (oldRanges for deletes,
+// newRanges for inserts); moved ops get no entry.
+function buildPairRanges(deletes, inserts, oldLines, newLines, granularity) {
+  const pairDeletes = deletes.filter(o => o.moveId == null);
+  const pairInserts = inserts.filter(o => o.moveId == null);
+  const pairCount = Math.min(pairDeletes.length, pairInserts.length);
+  const rangesByOp = new Map();
+  for (let i = 0; i < pairCount; i++) {
+    const r = inlineDiffRanges(
+      oldLines[pairDeletes[i].oldIdx], newLines[pairInserts[i].newIdx], granularity);
+    rangesByOp.set(pairDeletes[i], r.oldRanges);
+    rangesByOp.set(pairInserts[i], r.newRanges);
+  }
+  return rangesByOp;
 }
 
 function collapsePlan(groupLen, isFirst, isLast, contextLines) {
@@ -3207,12 +3494,9 @@ function buildUnifiedHtml(diff, opts) {
     } else {
       const deletes = group.ops.filter(o => o.type === 'delete');
       const inserts = group.ops.filter(o => o.type === 'insert');
-      const pairCount = Math.min(deletes.length, inserts.length);
-      const pairRanges = [];
-      for (let i = 0; i < pairCount; i++) {
-        pairRanges.push(inlineDiffRanges(
-          oldLines[deletes[i].oldIdx], newLines[inserts[i].newIdx], opts.granularity));
-      }
+      // Moved lines are excluded from positional inline pairing — a moved
+      // line's real partner is elsewhere, not the line across from it.
+      const rangesByOp = buildPairRanges(deletes, inserts, oldLines, newLines, opts.granularity);
       const gAttr = ' data-change-group="' + changeGroupIdx + '"';
       let first = true;
 
@@ -3220,11 +3504,13 @@ function buildUnifiedHtml(diff, opts) {
         const op = deletes[i];
         const text = oldLines[op.oldIdx];
         const hl = opts.hlOld ? opts.hlOld[op.oldIdx] : null;
-        const ranges = i < pairCount ? pairRanges[i].oldRanges : [];
-        html += '<tr class="diff-row-removed"' + gAttr + (first ? ' data-change-first' : '') + '>' +
+        const ranges = rangesByOp.get(op) || [];
+        const isMove = op.moveId != null;
+        html += '<tr class="' + (isMove ? 'diff-row-moved-out' : 'diff-row-removed') + '"' +
+          gAttr + moveRowAttrs(op) + (first ? ' data-change-first' : '') + '>' +
           '<td class="line-num">' + (op.oldIdx + 1) + '</td>' +
           '<td class="line-num"></td>' +
-          '<td class="line-type">-</td>' +
+          '<td class="line-type">' + (isMove ? '&#8645;' : '-') + '</td>' +
           '<td class="line-content">' + renderLineContent(text, hl, ranges, 'char-highlight-remove') + '</td></tr>';
         first = false;
       }
@@ -3233,11 +3519,13 @@ function buildUnifiedHtml(diff, opts) {
         const op = inserts[i];
         const text = newLines[op.newIdx];
         const hl = opts.hlNew ? opts.hlNew[op.newIdx] : null;
-        const ranges = i < pairCount ? pairRanges[i].newRanges : [];
-        html += '<tr class="diff-row-added"' + gAttr + (first ? ' data-change-first' : '') + '>' +
+        const ranges = rangesByOp.get(op) || [];
+        const isMove = op.moveId != null;
+        html += '<tr class="' + (isMove ? 'diff-row-moved-in' : 'diff-row-added') + '"' +
+          gAttr + moveRowAttrs(op) + (first ? ' data-change-first' : '') + '>' +
           '<td class="line-num"></td>' +
           '<td class="line-num">' + (op.newIdx + 1) + '</td>' +
-          '<td class="line-type">+</td>' +
+          '<td class="line-type">' + (isMove ? '&#8645;' : '+') + '</td>' +
           '<td class="line-content">' + renderLineContent(text, hl, ranges, 'char-highlight-add') + '</td></tr>';
         first = false;
       }
@@ -3300,21 +3588,18 @@ function buildSplitHtml(diff, opts) {
       const deletes = group.ops.filter(o => o.type === 'delete');
       const inserts = group.ops.filter(o => o.type === 'insert');
       const maxLen = Math.max(deletes.length, inserts.length);
-      const pairCount = Math.min(deletes.length, inserts.length);
-      const pairRanges = [];
-      for (let i = 0; i < pairCount; i++) {
-        pairRanges.push(inlineDiffRanges(
-          oldLines[deletes[i].oldIdx], newLines[inserts[i].newIdx], opts.granularity));
-      }
+      const rangesByOp = buildPairRanges(deletes, inserts, oldLines, newLines, opts.granularity);
       const gAttr = ' data-change-group="' + changeGroupIdx + '"';
 
       for (let i = 0; i < maxLen; i++) {
         const isFirst = i === 0;
         if (i < deletes.length) {
           const op = deletes[i];
-          const ranges = i < pairCount ? pairRanges[i].oldRanges : [];
+          const ranges = rangesByOp.get(op) || [];
           const hl = opts.hlOld ? opts.hlOld[op.oldIdx] : null;
-          leftHtml += '<tr class="diff-row-removed"' + gAttr + (isFirst ? ' data-change-first' : '') +
+          const cls = op.moveId != null ? 'diff-row-moved-out' : 'diff-row-removed';
+          leftHtml += '<tr class="' + cls + '"' + gAttr + moveRowAttrs(op) +
+            (isFirst ? ' data-change-first' : '') +
             '><td class="line-num">' + (op.oldIdx + 1) + '</td><td class="line-content">' +
             renderLineContent(oldLines[op.oldIdx], hl, ranges, 'char-highlight-remove') + '</td></tr>';
         } else {
@@ -3323,9 +3608,11 @@ function buildSplitHtml(diff, opts) {
 
         if (i < inserts.length) {
           const op = inserts[i];
-          const ranges = i < pairCount ? pairRanges[i].newRanges : [];
+          const ranges = rangesByOp.get(op) || [];
           const hl = opts.hlNew ? opts.hlNew[op.newIdx] : null;
-          rightHtml += '<tr class="diff-row-added"' + gAttr + '><td class="line-num">' + (op.newIdx + 1) +
+          const cls = op.moveId != null ? 'diff-row-moved-in' : 'diff-row-added';
+          rightHtml += '<tr class="' + cls + '"' + gAttr + moveRowAttrs(op) +
+            '><td class="line-num">' + (op.newIdx + 1) +
             '</td><td class="line-content">' +
             renderLineContent(newLines[op.newIdx], hl, ranges, 'char-highlight-add') + '</td></tr>';
         } else {
@@ -3495,7 +3782,7 @@ function formatBytes(n) {
 // ── Export: patch copy/download, HTML report, share link — plus toast/notice UI ──
 
 // Replaced at build time with the compiled CSS so exported reports match the app.
-const REPORT_CSS = "  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n\n  :root {\n    --bg: #0f1117;\n    --surface: #161922;\n    --surface-2: #1c1f2e;\n    --border: #2a2d3e;\n    --text: #e2e4ed;\n    --text-muted: #8b8fa3;\n    --accent: #7c6aef;\n    --accent-hover: #6b59de;\n    --added-bg: #12261e;\n    --added-border: #1a4d2e;\n    --added-text: #6fdd8b;\n    --added-gutter: #1a3a28;\n    --removed-bg: #2a1215;\n    --removed-border: #4d1a1f;\n    --removed-text: #f47067;\n    --removed-gutter: #3a1a1e;\n    --highlight-add: rgba(63, 185, 80, 0.25);\n    --highlight-remove: rgba(248, 81, 73, 0.25);\n    --unchanged-gutter: #1c1f2e;\n  }\n\n  html, body {\n    height: 100%;\n    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;\n    background: var(--bg);\n    color: var(--text);\n    line-height: 1.5;\n  }\n\n  .app {\n    display: flex;\n    flex-direction: column;\n    height: 100vh;\n    overflow: hidden;\n  }\n\n  .main-content {\n    display: flex;\n    flex-direction: column;\n    flex: 1;\n    min-height: 0;\n    overflow: hidden;\n  }\n\n  /* ── Header ── */\n  header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 16px 28px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .logo {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n    font-size: 18px;\n    font-weight: 700;\n    letter-spacing: -0.3px;\n  }\n\n  .logo-icon {\n    width: 32px;\n    height: 32px;\n    border-radius: 8px;\n    background: linear-gradient(135deg, var(--accent), #a78bfa);\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    font-size: 16px;\n    color: #fff;\n  }\n\n  .controls {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n  }\n\n  .btn {\n    padding: 8px 18px;\n    border-radius: 8px;\n    border: 1px solid var(--border);\n    background: var(--surface-2);\n    color: var(--text);\n    font-size: 13px;\n    font-weight: 500;\n    cursor: pointer;\n    transition: all 0.15s ease;\n  }\n\n  .btn:hover { background: var(--border); }\n\n  .btn-primary {\n    background: var(--accent);\n    border-color: var(--accent);\n    color: #fff;\n  }\n\n  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }\n\n  .view-toggle {\n    display: flex;\n    border-radius: 8px;\n    overflow: hidden;\n    border: 1px solid var(--border);\n  }\n\n  .view-toggle button {\n    padding: 7px 14px;\n    border: none;\n    background: var(--surface-2);\n    color: var(--text-muted);\n    font-size: 12px;\n    font-weight: 500;\n    cursor: pointer;\n    transition: all 0.15s ease;\n  }\n\n  .view-toggle button.active {\n    background: var(--accent);\n    color: #fff;\n  }\n\n  .view-toggle button:not(.active):hover { background: var(--border); }\n\n  /* ── Resize Handle ── */\n  .resize-handle {\n    height: 6px;\n    background: var(--border);\n    cursor: row-resize;\n    flex-shrink: 0;\n    position: relative;\n    transition: background 0.15s ease;\n  }\n\n  .resize-handle:hover, .resize-handle.dragging {\n    background: var(--accent);\n  }\n\n  .resize-handle::after {\n    content: '';\n    position: absolute;\n    left: 50%;\n    top: 50%;\n    transform: translate(-50%, -50%);\n    width: 32px;\n    height: 2px;\n    background: var(--text-muted);\n    border-radius: 1px;\n    opacity: 0.5;\n  }\n\n  /* ── Input Area ── */\n  .input-area {\n    display: grid;\n    grid-template-columns: 1fr 1fr;\n    gap: 0;\n    flex: 1;\n    min-height: 0;\n  }\n\n  .input-area.has-diff {\n    flex: none;\n    height: 250px;\n    min-height: 80px;\n  }\n\n  .input-pane {\n    display: flex;\n    flex-direction: column;\n    border-right: 1px solid var(--border);\n    min-height: 0;\n  }\n\n  .input-pane:last-child { border-right: none; }\n\n  .pane-header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 10px 16px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .pane-label {\n    font-size: 12px;\n    font-weight: 600;\n    text-transform: uppercase;\n    letter-spacing: 0.8px;\n    color: var(--text-muted);\n  }\n\n  .pane-header .char-count {\n    font-size: 11px;\n    color: var(--text-muted);\n    font-variant-numeric: tabular-nums;\n  }\n\n  textarea {\n    flex: 1;\n    resize: none;\n    border: none;\n    background: var(--bg);\n    color: var(--text);\n    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;\n    font-size: 13px;\n    line-height: 1.7;\n    padding: 16px;\n    outline: none;\n    tab-size: 4;\n    min-height: 0;\n  }\n\n  textarea::placeholder { color: var(--text-muted); opacity: 0.5; }\n\n  /* ── Diff Output ── */\n  .diff-area {\n    flex: 1;\n    min-height: 0;\n    display: none;\n    flex-direction: column;\n  }\n\n  .diff-area.visible { display: flex; }\n\n  .diff-toolbar {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 10px 16px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .diff-stats {\n    display: flex;\n    gap: 16px;\n    font-size: 13px;\n    font-weight: 500;\n  }\n\n  .stat-added { color: var(--added-text); }\n  .stat-removed { color: var(--removed-text); }\n  .stat-unchanged { color: var(--text-muted); }\n\n  .diff-scroll {\n    flex: 1;\n    overflow: auto;\n    min-height: 0;\n  }\n\n  /* ── Unified Diff ── */\n  .diff-table {\n    width: 100%;\n    border-collapse: collapse;\n    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;\n    font-size: 13px;\n    line-height: 1.7;\n  }\n\n  .diff-table td {\n    padding: 0 12px;\n    white-space: pre-wrap;\n    word-break: break-all;\n    vertical-align: top;\n  }\n\n  .diff-table .line-num {\n    width: 50px;\n    min-width: 50px;\n    text-align: right;\n    color: var(--text-muted);\n    opacity: 0.5;\n    user-select: none;\n    padding: 0 8px;\n    font-size: 12px;\n    border-right: 1px solid var(--border);\n  }\n\n  .diff-table .line-type {\n    width: 20px;\n    min-width: 20px;\n    text-align: center;\n    user-select: none;\n    font-weight: 600;\n  }\n\n  .diff-row-added {\n    background: var(--added-bg);\n  }\n\n  .diff-row-added .line-num { background: var(--added-gutter); }\n  .diff-row-added .line-type { color: var(--added-text); background: var(--added-gutter); }\n  .diff-row-added .line-content { color: var(--added-text); }\n\n  .diff-row-removed {\n    background: var(--removed-bg);\n  }\n\n  .diff-row-removed .line-num { background: var(--removed-gutter); }\n  .diff-row-removed .line-type { color: var(--removed-text); background: var(--removed-gutter); }\n  .diff-row-removed .line-content { color: var(--removed-text); }\n\n  .diff-row-unchanged .line-num { background: var(--unchanged-gutter); }\n  .diff-row-unchanged .line-type { background: var(--unchanged-gutter); }\n\n  .diff-row-separator td {\n    background: var(--surface-2);\n    color: var(--text-muted);\n    text-align: center;\n    padding: 4px 12px;\n    font-size: 12px;\n    font-style: italic;\n    border-top: 1px solid var(--border);\n    border-bottom: 1px solid var(--border);\n  }\n\n  .char-highlight-add { background: var(--highlight-add); border-radius: 2px; }\n  .char-highlight-remove { background: var(--highlight-remove); border-radius: 2px; }\n\n  /* ── Side-by-side ── */\n  .diff-side-wrapper {\n    display: grid;\n    grid-template-columns: 1fr 1fr;\n    min-height: 100%;\n  }\n\n  .diff-side {\n    border-right: 1px solid var(--border);\n    min-width: 0;\n  }\n\n  .diff-side:last-child { border-right: none; }\n\n  .diff-side-header {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding: 8px 16px;\n    background: var(--surface);\n    border-bottom: 1px solid var(--border);\n    font-size: 12px;\n    font-weight: 600;\n    text-transform: uppercase;\n    letter-spacing: 0.8px;\n    color: var(--text-muted);\n  }\n\n  .diff-side table {\n    width: 100%;\n  }\n\n  .diff-side .line-num { width: 45px; min-width: 45px; }\n\n  /* ── Empty state ── */\n  .empty-state {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    padding: 60px 20px;\n    color: var(--text-muted);\n    text-align: center;\n    gap: 12px;\n    flex: 1;\n  }\n\n  .empty-state svg { opacity: 0.3; }\n\n  .empty-state p {\n    font-size: 14px;\n    max-width: 320px;\n  }\n\n  /* ── Diff Navigation ── */\n  .diff-nav {\n    display: flex;\n    align-items: center;\n    gap: 6px;\n  }\n\n  .diff-nav .btn {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .diff-nav-label {\n    font-size: 12px;\n    color: var(--text-muted);\n    min-width: 40px;\n    text-align: center;\n    font-variant-numeric: tabular-nums;\n  }\n\n  /* ── Diff Scroll Wrapper (scroll + minimap) ── */\n  .diff-scroll-wrapper {\n    display: flex;\n    flex: 1;\n    min-height: 0;\n    position: relative;\n  }\n\n  /* ── Minimap ── */\n  .diff-minimap {\n    width: 20px;\n    flex-shrink: 0;\n    background: var(--surface);\n    border-left: 1px solid var(--border);\n    position: relative;\n    cursor: pointer;\n  }\n\n  .minimap-marker {\n    position: absolute;\n    left: 2px;\n    right: 2px;\n    min-height: 2px;\n    border-radius: 1px;\n  }\n\n  .minimap-marker.added { background: var(--added-text); opacity: 0.7; }\n  .minimap-marker.removed { background: var(--removed-text); opacity: 0.7; }\n\n  .minimap-viewport {\n    position: absolute;\n    left: 0;\n    right: 0;\n    background: rgba(255, 255, 255, 0.08);\n    border: 1px solid rgba(255, 255, 255, 0.15);\n    border-radius: 2px;\n    pointer-events: none;\n  }\n\n  /* ── Scrollbar ── */\n  ::-webkit-scrollbar { width: 8px; height: 8px; }\n  ::-webkit-scrollbar-track { background: transparent; }\n  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }\n  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }\n\n  /* ── Responsive ── */\n  @media (max-width: 768px) {\n    header { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }\n    .input-area { grid-template-columns: 1fr; }\n    .input-pane { border-right: none !important; border-bottom: 1px solid var(--border); }\n    .diff-side-wrapper { grid-template-columns: 1fr; }\n    .diff-side { border-right: none !important; border-bottom: 1px solid var(--border); }\n  }\n\n/* highlight.js token theme, scoped under .line-content so it cannot leak.\n   Colors only — no backgrounds — so diff row tints (#12261e / #2a1215) and\n   .char-highlight-* overlays always show through. Token colors are kept\n   clearly apart from the add/remove marks (--added-text #6fdd8b,\n   --removed-text #f47067): strings are teal rather than green, and pinks\n   stay far from the removal red. */\n\n.line-content .hljs-keyword,\n.line-content .hljs-name,\n.line-content .hljs-selector-tag { color: #b39afd; }\n\n.line-content .hljs-string,\n.line-content .hljs-regexp { color: #5ec6d8; }\n\n.line-content .hljs-number,\n.line-content .hljs-literal,\n.line-content .hljs-symbol,\n.line-content .hljs-bullet { color: #e0b163; }\n\n.line-content .hljs-comment,\n.line-content .hljs-doctag { color: var(--text-muted); font-style: italic; }\n\n.line-content .hljs-title,\n.line-content .hljs-title.function_,\n.line-content .hljs-section,\n.line-content .hljs-selector-id { color: #86b4f7; }\n\n.line-content .hljs-title.class_,\n.line-content .hljs-type,\n.line-content .hljs-built_in,\n.line-content .hljs-selector-class { color: #74d4e7; }\n\n.line-content .hljs-attr,\n.line-content .hljs-attribute,\n.line-content .hljs-property { color: #e3a6cd; }\n\n.line-content .hljs-variable,\n.line-content .hljs-template-variable,\n.line-content .hljs-params,\n.line-content .hljs-subst { color: #d5d9ea; }\n\n.line-content .hljs-meta,\n.line-content .hljs-tag,\n.line-content .hljs-operator,\n.line-content .hljs-punctuation { color: #9aa0b8; }\n\n.line-content .hljs-emphasis { font-style: italic; }\n\n.line-content .hljs-strong { font-weight: 700; }\n\n.line-content .hljs-addition { color: var(--added-text, #6fdd8b); }\n\n.line-content .hljs-deletion { color: var(--removed-text, #f47067); }\n\n/* ── Styles used only by the exported standalone HTML report ── */\nbody {\n  padding: 24px;\n  height: auto;\n}\n\n.report-header {\n  max-width: 1200px;\n  margin: 0 auto 20px;\n}\n\n.report-header h1 {\n  font-size: 20px;\n  font-weight: 700;\n  letter-spacing: -0.3px;\n  margin-bottom: 6px;\n}\n\n.report-meta {\n  font-size: 13px;\n  color: var(--text-muted);\n}\n\n.report-diff {\n  max-width: 1200px;\n  margin: 0 auto;\n  border: 1px solid var(--border);\n  border-radius: 10px;\n  overflow-x: auto;\n  background: var(--surface);\n}\n";
+const REPORT_CSS = "  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n\n  :root {\n    --bg: #0f1117;\n    --surface: #161922;\n    --surface-2: #1c1f2e;\n    --border: #2a2d3e;\n    --text: #e2e4ed;\n    --text-muted: #8b8fa3;\n    --accent: #7c6aef;\n    --accent-hover: #6b59de;\n    --added-bg: #12261e;\n    --added-border: #1a4d2e;\n    --added-text: #6fdd8b;\n    --added-gutter: #1a3a28;\n    --removed-bg: #2a1215;\n    --removed-border: #4d1a1f;\n    --removed-text: #f47067;\n    --removed-gutter: #3a1a1e;\n    --highlight-add: rgba(63, 185, 80, 0.25);\n    --highlight-remove: rgba(248, 81, 73, 0.25);\n    --unchanged-gutter: #1c1f2e;\n    --moved-bg: #10222f;\n    --moved-text: #58b7e6;\n    --moved-gutter: #16344a;\n  }\n\n  html, body {\n    height: 100%;\n    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;\n    background: var(--bg);\n    color: var(--text);\n    line-height: 1.5;\n  }\n\n  .app {\n    display: flex;\n    flex-direction: column;\n    height: 100vh;\n    overflow: hidden;\n  }\n\n  .main-content {\n    display: flex;\n    flex-direction: column;\n    flex: 1;\n    min-height: 0;\n    overflow: hidden;\n  }\n\n  /* ── Header ── */\n  header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 16px 28px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .logo {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n    font-size: 18px;\n    font-weight: 700;\n    letter-spacing: -0.3px;\n  }\n\n  .logo-icon {\n    width: 32px;\n    height: 32px;\n    border-radius: 8px;\n    background: linear-gradient(135deg, var(--accent), #a78bfa);\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    font-size: 16px;\n    color: #fff;\n  }\n\n  .controls {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n  }\n\n  .btn {\n    padding: 8px 18px;\n    border-radius: 8px;\n    border: 1px solid var(--border);\n    background: var(--surface-2);\n    color: var(--text);\n    font-size: 13px;\n    font-weight: 500;\n    cursor: pointer;\n    transition: all 0.15s ease;\n  }\n\n  .btn:hover { background: var(--border); }\n\n  .btn-primary {\n    background: var(--accent);\n    border-color: var(--accent);\n    color: #fff;\n  }\n\n  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }\n\n  .view-toggle {\n    display: flex;\n    border-radius: 8px;\n    overflow: hidden;\n    border: 1px solid var(--border);\n  }\n\n  .view-toggle button {\n    padding: 7px 14px;\n    border: none;\n    background: var(--surface-2);\n    color: var(--text-muted);\n    font-size: 12px;\n    font-weight: 500;\n    cursor: pointer;\n    transition: all 0.15s ease;\n  }\n\n  .view-toggle button.active {\n    background: var(--accent);\n    color: #fff;\n  }\n\n  .view-toggle button:not(.active):hover { background: var(--border); }\n\n  /* ── Resize Handle ── */\n  .resize-handle {\n    height: 6px;\n    background: var(--border);\n    cursor: row-resize;\n    flex-shrink: 0;\n    position: relative;\n    transition: background 0.15s ease;\n  }\n\n  .resize-handle:hover, .resize-handle.dragging {\n    background: var(--accent);\n  }\n\n  .resize-handle::after {\n    content: '';\n    position: absolute;\n    left: 50%;\n    top: 50%;\n    transform: translate(-50%, -50%);\n    width: 32px;\n    height: 2px;\n    background: var(--text-muted);\n    border-radius: 1px;\n    opacity: 0.5;\n  }\n\n  /* ── Input Area ── */\n  .input-area {\n    display: grid;\n    grid-template-columns: 1fr 1fr;\n    gap: 0;\n    flex: 1;\n    min-height: 0;\n  }\n\n  .input-area.has-diff {\n    flex: none;\n    height: 250px;\n    min-height: 80px;\n  }\n\n  .input-pane {\n    display: flex;\n    flex-direction: column;\n    border-right: 1px solid var(--border);\n    min-height: 0;\n  }\n\n  .input-pane:last-child { border-right: none; }\n\n  .pane-header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 10px 16px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .pane-label {\n    font-size: 12px;\n    font-weight: 600;\n    text-transform: uppercase;\n    letter-spacing: 0.8px;\n    color: var(--text-muted);\n  }\n\n  .pane-header .char-count {\n    font-size: 11px;\n    color: var(--text-muted);\n    font-variant-numeric: tabular-nums;\n  }\n\n  textarea {\n    flex: 1;\n    resize: none;\n    border: none;\n    background: var(--bg);\n    color: var(--text);\n    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;\n    font-size: 13px;\n    line-height: 1.7;\n    padding: 16px;\n    outline: none;\n    tab-size: 4;\n    min-height: 0;\n  }\n\n  textarea::placeholder { color: var(--text-muted); opacity: 0.5; }\n\n  /* ── Diff Output ── */\n  .diff-area {\n    flex: 1;\n    min-height: 0;\n    display: none;\n    flex-direction: column;\n  }\n\n  .diff-area.visible { display: flex; }\n\n  .diff-toolbar {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 10px 16px;\n    border-bottom: 1px solid var(--border);\n    background: var(--surface);\n    flex-shrink: 0;\n  }\n\n  .diff-stats {\n    display: flex;\n    gap: 16px;\n    font-size: 13px;\n    font-weight: 500;\n  }\n\n  .stat-added { color: var(--added-text); }\n  .stat-removed { color: var(--removed-text); }\n  .stat-moved { color: var(--moved-text); }\n  .stat-unchanged { color: var(--text-muted); }\n\n  .diff-scroll {\n    flex: 1;\n    overflow: auto;\n    min-height: 0;\n  }\n\n  /* ── Unified Diff ── */\n  .diff-table {\n    width: 100%;\n    border-collapse: collapse;\n    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;\n    font-size: 13px;\n    line-height: 1.7;\n  }\n\n  .diff-table td {\n    padding: 0 12px;\n    white-space: pre-wrap;\n    word-break: break-all;\n    vertical-align: top;\n  }\n\n  .diff-table .line-num {\n    width: 50px;\n    min-width: 50px;\n    text-align: right;\n    color: var(--text-muted);\n    opacity: 0.5;\n    user-select: none;\n    padding: 0 8px;\n    font-size: 12px;\n    border-right: 1px solid var(--border);\n  }\n\n  .diff-table .line-type {\n    width: 20px;\n    min-width: 20px;\n    text-align: center;\n    user-select: none;\n    font-weight: 600;\n  }\n\n  .diff-row-added {\n    background: var(--added-bg);\n  }\n\n  .diff-row-added .line-num { background: var(--added-gutter); }\n  .diff-row-added .line-type { color: var(--added-text); background: var(--added-gutter); }\n  .diff-row-added .line-content { color: var(--added-text); }\n\n  .diff-row-removed {\n    background: var(--removed-bg);\n  }\n\n  .diff-row-removed .line-num { background: var(--removed-gutter); }\n  .diff-row-removed .line-type { color: var(--removed-text); background: var(--removed-gutter); }\n  .diff-row-removed .line-content { color: var(--removed-text); }\n\n  .diff-row-unchanged .line-num { background: var(--unchanged-gutter); }\n  .diff-row-unchanged .line-type { background: var(--unchanged-gutter); }\n\n  .diff-row-moved-out,\n  .diff-row-moved-in {\n    background: var(--moved-bg);\n    cursor: pointer;\n  }\n\n  .diff-row-moved-out .line-num, .diff-row-moved-in .line-num { background: var(--moved-gutter); }\n  .diff-row-moved-out .line-type, .diff-row-moved-in .line-type { color: var(--moved-text); background: var(--moved-gutter); }\n  .diff-row-moved-out .line-content, .diff-row-moved-in .line-content { color: var(--moved-text); }\n\n  /* Split view has no line-type cell — badge the line-num gutter instead. */\n  .diff-side .diff-row-moved-out .line-num::after,\n  .diff-side .diff-row-moved-in .line-num::after {\n    content: '\\21C5';\n    margin-left: 4px;\n    color: var(--moved-text);\n    opacity: 0.7;\n  }\n\n  .diff-row-separator td {\n    background: var(--surface-2);\n    color: var(--text-muted);\n    text-align: center;\n    padding: 4px 12px;\n    font-size: 12px;\n    font-style: italic;\n    border-top: 1px solid var(--border);\n    border-bottom: 1px solid var(--border);\n  }\n\n  .char-highlight-add { background: var(--highlight-add); border-radius: 2px; }\n  .char-highlight-remove { background: var(--highlight-remove); border-radius: 2px; }\n\n  /* ── Side-by-side ── */\n  .diff-side-wrapper {\n    display: grid;\n    grid-template-columns: 1fr 1fr;\n    min-height: 100%;\n  }\n\n  .diff-side {\n    border-right: 1px solid var(--border);\n    min-width: 0;\n  }\n\n  .diff-side:last-child { border-right: none; }\n\n  .diff-side-header {\n    position: sticky;\n    top: 0;\n    z-index: 2;\n    padding: 8px 16px;\n    background: var(--surface);\n    border-bottom: 1px solid var(--border);\n    font-size: 12px;\n    font-weight: 600;\n    text-transform: uppercase;\n    letter-spacing: 0.8px;\n    color: var(--text-muted);\n  }\n\n  .diff-side table {\n    width: 100%;\n  }\n\n  .diff-side .line-num { width: 45px; min-width: 45px; }\n\n  /* ── Empty state ── */\n  .empty-state {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    padding: 60px 20px;\n    color: var(--text-muted);\n    text-align: center;\n    gap: 12px;\n    flex: 1;\n  }\n\n  .empty-state svg { opacity: 0.3; }\n\n  .empty-state p {\n    font-size: 14px;\n    max-width: 320px;\n  }\n\n  /* ── Diff Navigation ── */\n  .diff-nav {\n    display: flex;\n    align-items: center;\n    gap: 6px;\n  }\n\n  .diff-nav .btn {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .diff-nav-label {\n    font-size: 12px;\n    color: var(--text-muted);\n    min-width: 40px;\n    text-align: center;\n    font-variant-numeric: tabular-nums;\n  }\n\n  /* ── Diff Scroll Wrapper (scroll + minimap) ── */\n  .diff-scroll-wrapper {\n    display: flex;\n    flex: 1;\n    min-height: 0;\n    position: relative;\n  }\n\n  /* ── Minimap ── */\n  .diff-minimap {\n    width: 20px;\n    flex-shrink: 0;\n    background: var(--surface);\n    border-left: 1px solid var(--border);\n    position: relative;\n    cursor: pointer;\n  }\n\n  .minimap-marker {\n    position: absolute;\n    left: 2px;\n    right: 2px;\n    min-height: 2px;\n    border-radius: 1px;\n  }\n\n  .minimap-marker.added { background: var(--added-text); opacity: 0.7; }\n  .minimap-marker.removed { background: var(--removed-text); opacity: 0.7; }\n  .minimap-marker.moved { background: var(--moved-text); opacity: 0.7; }\n\n  .minimap-viewport {\n    position: absolute;\n    left: 0;\n    right: 0;\n    background: rgba(255, 255, 255, 0.08);\n    border: 1px solid rgba(255, 255, 255, 0.15);\n    border-radius: 2px;\n    pointer-events: none;\n  }\n\n  /* ── Scrollbar ── */\n  ::-webkit-scrollbar { width: 8px; height: 8px; }\n  ::-webkit-scrollbar-track { background: transparent; }\n  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }\n  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }\n\n  /* ── Responsive ── */\n  @media (max-width: 768px) {\n    header { padding: 12px 16px; flex-wrap: wrap; gap: 10px; }\n    .input-area { grid-template-columns: 1fr; }\n    .input-pane { border-right: none !important; border-bottom: 1px solid var(--border); }\n    .diff-side-wrapper { grid-template-columns: 1fr; }\n    .diff-side { border-right: none !important; border-bottom: 1px solid var(--border); }\n  }\n\n/* highlight.js token theme, scoped under .line-content so it cannot leak.\n   Colors only — no backgrounds — so diff row tints (#12261e / #2a1215) and\n   .char-highlight-* overlays always show through. Token colors are kept\n   clearly apart from the add/remove marks (--added-text #6fdd8b,\n   --removed-text #f47067): strings are teal rather than green, and pinks\n   stay far from the removal red. */\n\n.line-content .hljs-keyword,\n.line-content .hljs-name,\n.line-content .hljs-selector-tag { color: #b39afd; }\n\n.line-content .hljs-string,\n.line-content .hljs-regexp { color: #5ec6d8; }\n\n.line-content .hljs-number,\n.line-content .hljs-literal,\n.line-content .hljs-symbol,\n.line-content .hljs-bullet { color: #e0b163; }\n\n.line-content .hljs-comment,\n.line-content .hljs-doctag { color: var(--text-muted); font-style: italic; }\n\n.line-content .hljs-title,\n.line-content .hljs-title.function_,\n.line-content .hljs-section,\n.line-content .hljs-selector-id { color: #86b4f7; }\n\n.line-content .hljs-title.class_,\n.line-content .hljs-type,\n.line-content .hljs-built_in,\n.line-content .hljs-selector-class { color: #74d4e7; }\n\n.line-content .hljs-attr,\n.line-content .hljs-attribute,\n.line-content .hljs-property { color: #e3a6cd; }\n\n.line-content .hljs-variable,\n.line-content .hljs-template-variable,\n.line-content .hljs-params,\n.line-content .hljs-subst { color: #d5d9ea; }\n\n.line-content .hljs-meta,\n.line-content .hljs-tag,\n.line-content .hljs-operator,\n.line-content .hljs-punctuation { color: #9aa0b8; }\n\n.line-content .hljs-emphasis { font-style: italic; }\n\n.line-content .hljs-strong { font-weight: 700; }\n\n.line-content .hljs-addition { color: var(--added-text, #6fdd8b); }\n\n.line-content .hljs-deletion { color: var(--removed-text, #f47067); }\n\n/* ── Styles used only by the exported standalone HTML report ── */\nbody {\n  padding: 24px;\n  height: auto;\n}\n\n.report-header {\n  max-width: 1200px;\n  margin: 0 auto 20px;\n}\n\n.report-header h1 {\n  font-size: 20px;\n  font-weight: 700;\n  letter-spacing: -0.3px;\n  margin-bottom: 6px;\n}\n\n.report-meta {\n  font-size: 13px;\n  color: var(--text-muted);\n}\n\n.report-diff {\n  max-width: 1200px;\n  margin: 0 auto;\n  border: 1px solid var(--border);\n  border-radius: 10px;\n  overflow-x: auto;\n  background: var(--surface);\n}\n";
 
 function showToast(msg) {
   const el = document.createElement('div');
@@ -3608,6 +3895,7 @@ function exportHtmlReport() {
     '<p class="report-meta">Generated ' + esc(now.toLocaleString()) +
     ' &middot; <span class="stat-added">+' + stats.added + '</span>' +
     ' <span class="stat-removed">-' + stats.removed + '</span>' +
+    (stats.moved ? ' <span class="stat-moved">&#8645;' + stats.moved + '</span>' : '') +
     ' &middot; ' + stats.unchanged + ' unchanged</p></div>' +
     '<div class="report-diff">' + body + '</div>' +
     '</body></html>';
@@ -3631,6 +3919,8 @@ async function exportShareLink() {
       ignoreWhitespace: settings.ignoreWhitespace,
       ignoreCase: settings.ignoreCase,
       language: settings.language,
+      detectMoves: settings.detectMoves,
+      ignoreComments: settings.ignoreComments,
     },
   };
   let hash;
@@ -3655,6 +3945,12 @@ async function exportShareLink() {
 // ──────────── src/js/ui-extras.js ────────────
 // ── Minimap, change navigation, resize handle, input scroll sync ──
 
+function flashRow(el) {
+  el.style.outline = '2px solid var(--accent)';
+  el.style.outlineOffset = '-2px';
+  setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 800);
+}
+
 function jumpDiff(dir) {
   if (session.changeGroups.length === 0) return;
   session.currentChangeIdx += dir;
@@ -3663,9 +3959,7 @@ function jumpDiff(dir) {
   updateNavLabel();
   const el = session.changeGroups[session.currentChangeIdx];
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  el.style.outline = '2px solid var(--accent)';
-  el.style.outlineOffset = '-2px';
-  setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 800);
+  flashRow(el);
 }
 
 function updateNavLabel() {
@@ -3690,13 +3984,15 @@ function updateMinimap() {
   if (totalHeight === 0) return;
   const mapHeight = diffMinimap.clientHeight;
 
-  const rows = diffScroll.querySelectorAll('.diff-row-added, .diff-row-removed');
+  const rows = diffScroll.querySelectorAll(
+    '.diff-row-added, .diff-row-removed, .diff-row-moved-in, .diff-row-moved-out');
   rows.forEach(row => {
     const height = row.offsetHeight;
     if (height === 0) return; // collapsed rows
     const top = row.offsetTop;
     const marker = document.createElement('div');
-    marker.className = 'minimap-marker ' + (row.classList.contains('diff-row-added') ? 'added' : 'removed');
+    marker.className = 'minimap-marker ' + (row.classList.contains('diff-row-added') ? 'added'
+      : row.classList.contains('diff-row-removed') ? 'removed' : 'moved');
     marker.style.top = ((top / totalHeight) * mapHeight) + 'px';
     marker.style.height = Math.max(2, (height / totalHeight) * mapHeight) + 'px';
     diffMinimap.appendChild(marker);
@@ -3787,6 +4083,12 @@ let autoCompareTimer = null;
 let saveInputsTimer = null;
 let autoCompareWarned = false;
 
+function countLines(t) {
+  let n = 1;
+  for (let p = t.indexOf('\n'); p !== -1; p = t.indexOf('\n', p + 1)) n++;
+  return n;
+}
+
 function updateCounts() {
   leftCount.textContent = leftInput.value.length + ' chars';
   rightCount.textContent = rightInput.value.length + ' chars';
@@ -3810,20 +4112,24 @@ function hideDiffArea() {
   inputArea.style.height = '';
 }
 
+// ── Language resolution (shared by highlighting and comment stripping) ──
+function resolveLanguage(aText, bText) {
+  if (settings.mode === 'json') return 'json';
+  if (settings.language === 'plain') return null;
+  if (settings.language === 'auto') {
+    const sample = aText.length >= bText.length ? aText : bText;
+    return typeof detectLanguage === 'function'
+      ? detectLanguage(sample, [session.leftName, session.rightName]) : null;
+  }
+  return settings.language;
+}
+
 // ── Syntax highlighting prep ──
-function prepareHighlight(aText, bText, diff) {
+function prepareHighlight(aText, bText, diff, lang) {
   session.hlOld = null;
   session.hlNew = null;
   session.activeLang = null;
   if (typeof highlightToLines !== 'function') { updateLangChip(); return; }
-
-  let lang = null;
-  if (settings.mode === 'json') lang = 'json';
-  else if (settings.language === 'plain') lang = null;
-  else if (settings.language === 'auto') {
-    const sample = aText.length >= bText.length ? aText : bText;
-    lang = detectLanguage(sample, [session.leftName, session.rightName]);
-  } else lang = settings.language;
 
   if (!lang || lang === 'plaintext') { updateLangChip(); return; }
   if (aText.length > HL_MAX_CHARS || bText.length > HL_MAX_CHARS ||
@@ -3883,16 +4189,38 @@ function runDiff() {
     b = rb.normalized;
   }
 
+  const lang = resolveLanguage(a, b);
+  let aSrc = null;
+  let bSrc = null;
+  if (settings.ignoreComments) {
+    if (!lang || lang === 'plaintext' || typeof stripComments !== 'function') {
+      showNotice('Ignore comments has no effect &mdash; no language detected. Pick one under Language in options.');
+    } else if (a.length > HL_MAX_CHARS || b.length > HL_MAX_CHARS ||
+               countLines(a) > HL_MAX_LINES || countLines(b) > HL_MAX_LINES) {
+      showNotice('Ignore comments skipped &mdash; input is too large for language analysis.');
+    } else {
+      aSrc = stripComments(a, lang);
+      bSrc = stripComments(b, lang);
+      if (!aSrc || !bSrc) {
+        aSrc = bSrc = null;
+        showNotice('Ignore comments has no effect for this language.');
+      }
+    }
+  }
+
   const diff = computeDiff(a, b, {
     ignoreWhitespace: settings.ignoreWhitespace,
     ignoreCase: settings.ignoreCase,
+    detectMoves: settings.detectMoves,
+    aKeySource: aSrc,
+    bKeySource: bSrc,
   });
   session.lastDiff = diff;
   session.lastPatch = null;
   if (diff.truncated) {
     showNotice('Diff too complex &mdash; showing a block replacement for the changed middle section.');
   }
-  prepareHighlight(a, b, diff);
+  prepareHighlight(a, b, diff, lang);
   showDiffArea();
   renderCurrentDiff();
 }
@@ -3905,6 +4233,7 @@ function renderCurrentDiff() {
   diffStats.innerHTML =
     '<span class="stat-added">+' + stats.added + ' added</span>' +
     '<span class="stat-removed">-' + stats.removed + ' removed</span>' +
+    (stats.moved ? '<span class="stat-moved">&#8645;' + stats.moved + ' moved</span>' : '') +
     '<span class="stat-unchanged">' + stats.unchanged + ' unchanged</span>';
 
   const opts = {
@@ -3968,6 +4297,8 @@ function applySettingsToControls() {
     b.classList.toggle('active', b.dataset.gran === settings.granularity));
   document.getElementById('optWhitespace').value = settings.ignoreWhitespace;
   document.getElementById('optIgnoreCase').checked = settings.ignoreCase;
+  document.getElementById('optDetectMoves').checked = settings.detectMoves;
+  document.getElementById('optIgnoreComments').checked = settings.ignoreComments;
   document.getElementById('optAutoCompare').checked = settings.autoCompare;
   document.getElementById('optCollapse').checked = settings.collapseUnchanged;
   document.getElementById('optSyncScroll').checked = settings.syncInputScroll;
@@ -4129,6 +4460,14 @@ function setupMainEvents() {
     settings.ignoreCase = e.target.checked;
     afterComputeSettingChange();
   });
+  document.getElementById('optDetectMoves').addEventListener('change', (e) => {
+    settings.detectMoves = e.target.checked;
+    afterComputeSettingChange();
+  });
+  document.getElementById('optIgnoreComments').addEventListener('change', (e) => {
+    settings.ignoreComments = e.target.checked;
+    afterComputeSettingChange();
+  });
   document.getElementById('optAutoCompare').addEventListener('change', (e) => {
     settings.autoCompare = e.target.checked;
     saveSettings();
@@ -4184,16 +4523,27 @@ function setupMainEvents() {
     else if (action === 'report') exportHtmlReport();
   });
 
-  // ── Expand collapsed regions ──
+  // ── Expand collapsed regions / jump between move partners ──
   diffScroll.addEventListener('click', (e) => {
     const row = e.target.closest('.diff-row-collapse');
-    if (!row) return;
-    const id = row.dataset.collapseId;
-    diffScroll.querySelectorAll('[data-collapse-id="' + CSS.escape(id) + '"]').forEach(el => {
-      if (el.classList.contains('diff-row-collapse')) el.remove();
-      else el.classList.remove('collapse-hidden');
-    });
-    updateMinimap();
+    if (row) {
+      const id = row.dataset.collapseId;
+      diffScroll.querySelectorAll('[data-collapse-id="' + CSS.escape(id) + '"]').forEach(el => {
+        if (el.classList.contains('diff-row-collapse')) el.remove();
+        else el.classList.remove('collapse-hidden');
+      });
+      updateMinimap();
+      return;
+    }
+    const moveRow = e.target.closest('tr[data-move-partner]');
+    if (moveRow) {
+      const partner = diffScroll.querySelector(
+        '[data-move-row="' + CSS.escape(moveRow.dataset.movePartner) + '"]');
+      if (partner) {
+        partner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        flashRow(partner);
+      }
+    }
   });
 }
 
@@ -4207,7 +4557,7 @@ async function loadFromHash(hash) {
     session.leftName = typeof payload.ln === 'string' ? payload.ln : null;
     session.rightName = typeof payload.rn === 'string' ? payload.rn : null;
     if (payload.s && typeof payload.s === 'object') {
-      for (const key of ['mode', 'view', 'granularity', 'ignoreWhitespace', 'ignoreCase', 'language']) {
+      for (const key of ['mode', 'view', 'granularity', 'ignoreWhitespace', 'ignoreCase', 'language', 'detectMoves', 'ignoreComments']) {
         if (key in payload.s) settings[key] = payload.s[key];
       }
     }

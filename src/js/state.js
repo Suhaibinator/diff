@@ -40,6 +40,8 @@ const settings = {
   granularity: 'word',        // 'line' | 'word' | 'char'
   ignoreWhitespace: 'none',   // 'none' | 'trim' | 'all'
   ignoreCase: false,
+  detectMoves: true,          // tag relocated lines/blocks instead of +/-
+  ignoreComments: false,      // hide comment-only changes (needs a resolved language)
   collapseUnchanged: false,
   contextLines: 3,
   autoCompare: false,

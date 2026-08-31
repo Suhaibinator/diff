@@ -415,3 +415,12 @@ test('generated patches parse back to the same names, headers, and lines', () =>
     .filter((l, idx) => idx >= 2 && l !== '' && !l.startsWith('@@ ') && !l.startsWith('\\'));
   assert.deepEqual(reLines, expected);
 });
+
+test('move tagging never changes generated patches', () => {
+  const { computeDiff } = require('../src/js/diff-core.js');
+  const oldT = 'import b\nimport a\nimport c\nbody();\n';
+  const newT = 'import a\nimport c\nimport b\nbody();\n';
+  const plain = generateUnifiedPatch(computeDiff(oldT, newT, {}), {});
+  const tagged = generateUnifiedPatch(computeDiff(oldT, newT, { detectMoves: true }), {});
+  assert.equal(tagged, plain);
+});

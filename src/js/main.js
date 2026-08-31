@@ -8,6 +8,12 @@ let autoCompareTimer = null;
 let saveInputsTimer = null;
 let autoCompareWarned = false;
 
+function countLines(t) {
+  let n = 1;
+  for (let p = t.indexOf('\n'); p !== -1; p = t.indexOf('\n', p + 1)) n++;
+  return n;
+}
+
 function updateCounts() {
   leftCount.textContent = leftInput.value.length + ' chars';
   rightCount.textContent = rightInput.value.length + ' chars';
@@ -31,20 +37,24 @@ function hideDiffArea() {
   inputArea.style.height = '';
 }
 
+// ── Language resolution (shared by highlighting and comment stripping) ──
+function resolveLanguage(aText, bText) {
+  if (settings.mode === 'json') return 'json';
+  if (settings.language === 'plain') return null;
+  if (settings.language === 'auto') {
+    const sample = aText.length >= bText.length ? aText : bText;
+    return typeof detectLanguage === 'function'
+      ? detectLanguage(sample, [session.leftName, session.rightName]) : null;
+  }
+  return settings.language;
+}
+
 // ── Syntax highlighting prep ──
-function prepareHighlight(aText, bText, diff) {
+function prepareHighlight(aText, bText, diff, lang) {
   session.hlOld = null;
   session.hlNew = null;
   session.activeLang = null;
   if (typeof highlightToLines !== 'function') { updateLangChip(); return; }
-
-  let lang = null;
-  if (settings.mode === 'json') lang = 'json';
-  else if (settings.language === 'plain') lang = null;
-  else if (settings.language === 'auto') {
-    const sample = aText.length >= bText.length ? aText : bText;
-    lang = detectLanguage(sample, [session.leftName, session.rightName]);
-  } else lang = settings.language;
 
   if (!lang || lang === 'plaintext') { updateLangChip(); return; }
   if (aText.length > HL_MAX_CHARS || bText.length > HL_MAX_CHARS ||
@@ -104,16 +114,38 @@ function runDiff() {
     b = rb.normalized;
   }
 
+  const lang = resolveLanguage(a, b);
+  let aSrc = null;
+  let bSrc = null;
+  if (settings.ignoreComments) {
+    if (!lang || lang === 'plaintext' || typeof stripComments !== 'function') {
+      showNotice('Ignore comments has no effect &mdash; no language detected. Pick one under Language in options.');
+    } else if (a.length > HL_MAX_CHARS || b.length > HL_MAX_CHARS ||
+               countLines(a) > HL_MAX_LINES || countLines(b) > HL_MAX_LINES) {
+      showNotice('Ignore comments skipped &mdash; input is too large for language analysis.');
+    } else {
+      aSrc = stripComments(a, lang);
+      bSrc = stripComments(b, lang);
+      if (!aSrc || !bSrc) {
+        aSrc = bSrc = null;
+        showNotice('Ignore comments has no effect for this language.');
+      }
+    }
+  }
+
   const diff = computeDiff(a, b, {
     ignoreWhitespace: settings.ignoreWhitespace,
     ignoreCase: settings.ignoreCase,
+    detectMoves: settings.detectMoves,
+    aKeySource: aSrc,
+    bKeySource: bSrc,
   });
   session.lastDiff = diff;
   session.lastPatch = null;
   if (diff.truncated) {
     showNotice('Diff too complex &mdash; showing a block replacement for the changed middle section.');
   }
-  prepareHighlight(a, b, diff);
+  prepareHighlight(a, b, diff, lang);
   showDiffArea();
   renderCurrentDiff();
 }
@@ -126,6 +158,7 @@ function renderCurrentDiff() {
   diffStats.innerHTML =
     '<span class="stat-added">+' + stats.added + ' added</span>' +
     '<span class="stat-removed">-' + stats.removed + ' removed</span>' +
+    (stats.moved ? '<span class="stat-moved">&#8645;' + stats.moved + ' moved</span>' : '') +
     '<span class="stat-unchanged">' + stats.unchanged + ' unchanged</span>';
 
   const opts = {
@@ -189,6 +222,8 @@ function applySettingsToControls() {
     b.classList.toggle('active', b.dataset.gran === settings.granularity));
   document.getElementById('optWhitespace').value = settings.ignoreWhitespace;
   document.getElementById('optIgnoreCase').checked = settings.ignoreCase;
+  document.getElementById('optDetectMoves').checked = settings.detectMoves;
+  document.getElementById('optIgnoreComments').checked = settings.ignoreComments;
   document.getElementById('optAutoCompare').checked = settings.autoCompare;
   document.getElementById('optCollapse').checked = settings.collapseUnchanged;
   document.getElementById('optSyncScroll').checked = settings.syncInputScroll;
@@ -350,6 +385,14 @@ function setupMainEvents() {
     settings.ignoreCase = e.target.checked;
     afterComputeSettingChange();
   });
+  document.getElementById('optDetectMoves').addEventListener('change', (e) => {
+    settings.detectMoves = e.target.checked;
+    afterComputeSettingChange();
+  });
+  document.getElementById('optIgnoreComments').addEventListener('change', (e) => {
+    settings.ignoreComments = e.target.checked;
+    afterComputeSettingChange();
+  });
   document.getElementById('optAutoCompare').addEventListener('change', (e) => {
     settings.autoCompare = e.target.checked;
     saveSettings();
@@ -405,16 +448,27 @@ function setupMainEvents() {
     else if (action === 'report') exportHtmlReport();
   });
 
-  // ── Expand collapsed regions ──
+  // ── Expand collapsed regions / jump between move partners ──
   diffScroll.addEventListener('click', (e) => {
     const row = e.target.closest('.diff-row-collapse');
-    if (!row) return;
-    const id = row.dataset.collapseId;
-    diffScroll.querySelectorAll('[data-collapse-id="' + CSS.escape(id) + '"]').forEach(el => {
-      if (el.classList.contains('diff-row-collapse')) el.remove();
-      else el.classList.remove('collapse-hidden');
-    });
-    updateMinimap();
+    if (row) {
+      const id = row.dataset.collapseId;
+      diffScroll.querySelectorAll('[data-collapse-id="' + CSS.escape(id) + '"]').forEach(el => {
+        if (el.classList.contains('diff-row-collapse')) el.remove();
+        else el.classList.remove('collapse-hidden');
+      });
+      updateMinimap();
+      return;
+    }
+    const moveRow = e.target.closest('tr[data-move-partner]');
+    if (moveRow) {
+      const partner = diffScroll.querySelector(
+        '[data-move-row="' + CSS.escape(moveRow.dataset.movePartner) + '"]');
+      if (partner) {
+        partner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        flashRow(partner);
+      }
+    }
   });
 }
 
@@ -428,7 +482,7 @@ async function loadFromHash(hash) {
     session.leftName = typeof payload.ln === 'string' ? payload.ln : null;
     session.rightName = typeof payload.rn === 'string' ? payload.rn : null;
     if (payload.s && typeof payload.s === 'object') {
-      for (const key of ['mode', 'view', 'granularity', 'ignoreWhitespace', 'ignoreCase', 'language']) {
+      for (const key of ['mode', 'view', 'granularity', 'ignoreWhitespace', 'ignoreCase', 'language', 'detectMoves', 'ignoreComments']) {
         if (key in payload.s) settings[key] = payload.s[key];
       }
     }
